@@ -89,6 +89,66 @@ test("createSignedFetch signs outgoing request", async (t) => {
   assert.ok(captured.init.headers["X-Sdk-Date"])
 })
 
+test("createSignedFetch adds CLI routing headers + body fields on chat requests", async (t) => {
+  let captured = null
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (input, init) => {
+    captured = { input: typeof input === "string" ? input : input.url, init }
+    return new Response("data: [DONE]", { status: 200 })
+  }
+  t.after(() => {
+    globalThis.fetch = realFetch
+  })
+
+  const signedFetch = createSignedFetch(AK, SK)
+  await signedFetch("https://example.com/api/v2/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "openpangu-2.0-pro",
+      max_tokens: 100,
+      messages: [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: "hello" },
+        { role: "user", content: "介绍你自己" },
+      ],
+    }),
+  })
+
+  const h = captured.init.headers
+  assert.equal(h["User-Agent"], "ai-sdk/provider-utils/4.0.21 runtime/bun/1.3.14", "CLI user-agent")
+  assert.equal(h["model-id"], "openpangu-2.0-pro", "model-id routing header")
+  assert.match(h["x-snap-traceid"], /^[0-9a-f]{32}_[0-9a-f]{16}$/, "snap traceid 32_16 hex")
+  assert.ok(h["user-session-id"]?.startsWith("ses_"), "session header")
+  assert.ok(h["x-ot-session-id"] === h["user-session-id"], "ot session matches")
+
+  const body = JSON.parse(captured.init.body)
+  assert.equal(body.stream, true, "stream forced on")
+  assert.equal(body.tool_stream, true, "tool_stream added")
+  assert.equal(body.user_prompt, "介绍你自己", "user_prompt = last user message")
+  assert.equal(body.model, "openpangu-2.0-pro", "model unchanged")
+})
+
+test("createSignedFetch leaves non-chat requests untouched", async (t) => {
+  let captured = null
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (input, init) => {
+    captured = { input: typeof input === "string" ? input : input.url, init }
+    return new Response("{}", { status: 200 })
+  }
+  t.after(() => {
+    globalThis.fetch = realFetch
+  })
+
+  const signedFetch = createSignedFetch(AK, SK)
+  await signedFetch("https://example.com/v1/agent-center/agents/useragents?offset=0", {
+    method: "GET",
+    headers: { "Content-Type": "application/json" },
+  })
+  assert.equal(captured.init.headers["model-id"], undefined, "no CLI headers on discovery calls")
+  assert.equal(captured.init.body, undefined, "no body on GET")
+})
+
 test("pickAgentId prefers CLI-capable / CodeAgent / primary", () => {
   const agents = [
     { agent_id: "aaa", supported_clients: ["VSCODE_H"] },

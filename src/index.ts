@@ -66,9 +66,10 @@ function resolveBase(
     .replace(/\/$/, "");
 }
 
-// Models known from the CodeArts CLI binary (agentkernel) that are NOT served
-// through the agent-center API. Merged into the discovered set as a supplement;
-// the gateway may or may not route them for a given account.
+// Models reachable through the gateway but NOT served by agent-center
+// discovery for this account (verified live; ids are routing aliases).
+// Qwen3.6-27B-VL / Qwen3.5-397B-A17B-VL / ClaudeV1 / Qwen3-Coder-30B-A3B
+// are NOT registered for this account and were removed.
 const EXTRA_MODELS: DiscoveredModel[] = [
   {
     id: "GLM-5.2",
@@ -79,44 +80,20 @@ const EXTRA_MODELS: DiscoveredModel[] = [
     images: false,
   },
   {
+    id: "glm-5.2-sft-harmony",
+    name: "GLM-5.2-ArkTS-SPARK",
+    context: 131072,
+    output: 32768,
+    reasoning: true,
+    images: false,
+  },
+  {
     id: "Qwen3-VL-235B",
     name: "Qwen3-VL-235B",
     context: 131072,
     output: 32768,
     reasoning: false,
     images: true,
-  },
-  {
-    id: "Qwen3.6-27B-VL",
-    name: "Qwen3.6-27B-VL",
-    context: 131072,
-    output: 32768,
-    reasoning: false,
-    images: true,
-  },
-  {
-    id: "Qwen3.5-397B-A17B-VL",
-    name: "Qwen3.5-397B-A17B-VL",
-    context: 131072,
-    output: 32768,
-    reasoning: false,
-    images: true,
-  },
-  {
-    id: "Qwen3-Coder-30B-A3B-Instruct",
-    name: "Qwen3-Coder-30B-A3B",
-    context: 131072,
-    output: 32768,
-    reasoning: false,
-    images: false,
-  },
-  {
-    id: "ClaudeV1",
-    name: "ClaudeV1",
-    context: 200000,
-    output: 65536,
-    reasoning: true,
-    images: false,
   },
 ];
 

@@ -77,11 +77,22 @@ export function signRequest(
   };
 }
 
+const uuidHex = (): string => crypto.randomUUID().replace(/-/g, "");
+
+const CHAT_PATH_RE = /\/api\/v2\/chat\/completions\/?$/;
+
 /**
  * Custom fetch for the OpenAI-compatible SDK: signs every request
  * (including streaming chat completions) with the AK/SK.
+ *
+ * Chat requests additionally get the full CodeArts CLI header set and the
+ * CLI's extra body fields (stream, user_prompt, tool_stream): the snap-access
+ * gateway routes by request shape — without them the request lands on a
+ * wrong backend (Whitelabel 404) or the model reports "not registered".
  */
 export function createSignedFetch(ak: string, sk: string) {
+  // per-process pseudo session id, mirrors one TUI chat session
+  let sessionId = `ses_${Math.random().toString(36).slice(2, 11)}${Date.now().toString(36)}`;
   return async (
     input: RequestInfo | URL,
     init?: RequestInit,
@@ -95,9 +106,10 @@ export function createSignedFetch(ak: string, sk: string) {
     const method = (
       init?.method ?? (input instanceof Request ? input.method : "GET")
     ).toUpperCase();
-    const body =
+    const isChat = CHAT_PATH_RE.test(url);
+    let body =
       init?.body ?? (input instanceof Request ? input.body : undefined);
-    const bodyStr =
+    let bodyStr =
       typeof body === "string"
         ? body
         : body
@@ -120,7 +132,83 @@ export function createSignedFetch(ak: string, sk: string) {
       }
     }
 
-    const signed = signRequest(method, url, ak, sk, baseHeaders, bodyStr);
-    return fetch(input, { ...init, headers: signed });
+    // Header set to sign and send. For chat requests the CLI header set is
+    // merged in case-insensitively (later values win) so an SDK-provided
+    // "user-agent" never ends up on the wire twice with different values.
+    let outHeaders = baseHeaders;
+    if (isChat) {
+      let parsed: Record<string, unknown> = {};
+      try {
+        parsed = bodyStr ? JSON.parse(bodyStr) : {};
+      } catch {
+        parsed = {};
+      }
+      const model = typeof parsed.model === "string" ? parsed.model : "";
+      // CLI body shape: streaming + tool_stream + last user turn echoed
+      parsed.stream = true;
+      parsed.tool_stream = parsed.tool_stream ?? true;
+      if (!Array.isArray(parsed.messages)) parsed.messages = [];
+      const lastUser = [...(parsed.messages as { role?: string }[])]
+        .reverse()
+        .find((m) => m?.role === "user");
+      const lastText =
+        lastUser && typeof lastUser === "object"
+          ? ((lastUser as { content?: unknown }).content ?? "")
+          : "";
+      parsed.user_prompt =
+        typeof parsed.user_prompt === "string"
+          ? parsed.user_prompt
+          : typeof lastText === "string"
+            ? lastText
+            : "";
+      bodyStr = JSON.stringify(parsed);
+      body = bodyStr;
+
+      // full CLI header set (see README "gateway routing" section)
+      const cliHeaders: Record<string, string> = {
+        "X-Security-token": "",
+        "x-ot-trace-id": uuidHex(),
+        "x-ot-span-id": uuidHex(),
+        "x-snap-traceid": `${uuidHex()}_${uuidHex().slice(0, 16)}`,
+        "x-ot-session-id": sessionId,
+        "x-ot-parent-session-id": "",
+        "user-session-id": sessionId,
+        "x-ot-function": "agent-tui",
+        "X-Language": "zh-cn",
+        "user-msg-id": `msg_${Math.random().toString(36).slice(2, 14)}${Date.now().toString(36)}`,
+        "created-time": new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+        "x-ot-client-type": "CLI",
+        "x-ot-client-version": "26.8.12",
+        "client-ip": "198.18.0.1",
+        "User-Agent": "ai-sdk/provider-utils/4.0.21 runtime/bun/1.3.14",
+      };
+      if (model) {
+        cliHeaders["model-id"] = model;
+        cliHeaders["model-name"] = model;
+      }
+      // merge case-insensitively: SDK may pass "user-agent" while the CLI
+      // headers use "User-Agent" — both would go on the wire but only one is
+      // signed, breaking the signature. Later values win.
+      const merged: Record<string, string> = {};
+      const lowerToKey = new Map<string, string>();
+      for (const [k, v] of Object.entries(baseHeaders)) {
+        const lower = k.toLowerCase();
+        const existing = lowerToKey.get(lower);
+        if (existing !== undefined) delete merged[existing];
+        merged[k] = v;
+        lowerToKey.set(lower, k);
+      }
+      for (const [k, v] of Object.entries(cliHeaders)) {
+        const lower = k.toLowerCase();
+        const existing = lowerToKey.get(lower);
+        if (existing !== undefined) delete merged[existing];
+        merged[k] = v;
+        lowerToKey.set(lower, k);
+      }
+      outHeaders = merged;
+    }
+
+    const signed = signRequest(method, url, ak, sk, outHeaders, bodyStr);
+    return fetch(input, { ...init, method, body, headers: signed });
   };
 }
