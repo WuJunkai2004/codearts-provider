@@ -154,19 +154,49 @@ test("server() returns hooks with config/provider/auth", async (t) => {
   const provider = cfg.provider.codearts
   assert.ok(provider, "provider registered even without credentials (visible in /connect)")
   assert.equal(provider.options.fetch, undefined, "no signed fetch without credentials")
-  assert.ok(Object.keys(provider.models).length > 0, "static model list present without credentials")
+  const ids = Object.keys(provider.models)
+  assert.deepEqual(ids, ["connect-required"], "single hint model without credentials")
+  assert.match(provider.models["connect-required"].name, /connect/i)
 
   const models = await hooks.provider.models(
     { options: { baseURL: "https://example.com/api/v2" } },
     { auth: undefined },
   )
-  // no creds -> no models
-  assert.deepEqual(Object.keys(models), [])
+  // no creds -> hint model only
+  assert.deepEqual(Object.keys(models), ["connect-required"])
+  assert.match(models["connect-required"].name, /connect/i)
 
   // auth loader: ak/sk key -> signed fetch + placeholder apiKey
   const opts = await hooks.auth.loader(async () => ({ type: "api", key: "MYAK/MYSK" }))
   assert.equal(opts.apiKey, "codearts-signed")
   assert.equal(typeof opts.fetch, "function")
+})
+
+test("hint model name is i18n-aware (zh vs en, CODEARTS_LANG override)", async () => {
+  const mod = await import("../dist/index.js?i18n")
+  const hooks = await mod.default.server({}, {})
+  const cfg = {}
+  const saved = process.env.CODEARTS_LANG
+  const savedLang = process.env.LANG
+  try {
+    delete process.env.LANG
+    delete process.env.CODEARTS_LANG
+    let m = await hooks.provider.models({ options: {} }, { auth: undefined })
+    assert.match(m["connect-required"].name, /^Not connected/, "default English hint")
+
+    process.env.CODEARTS_LANG = "zh"
+    m = await hooks.provider.models({ options: {} }, { auth: undefined })
+    assert.match(m["connect-required"].name, /未连接.*\/connect/, "Chinese hint via CODEARTS_LANG")
+
+    process.env.CODEARTS_LANG = "en_US.UTF-8"
+    m = await hooks.provider.models({ options: {} }, { auth: undefined })
+    assert.match(m["connect-required"].name, /^Not connected/, "CODEARTS_LANG=en_US still English")
+  } finally {
+    if (saved === undefined) delete process.env.CODEARTS_LANG
+    else process.env.CODEARTS_LANG = saved
+    if (savedLang === undefined) delete process.env.LANG
+    else process.env.LANG = savedLang
+  }
 })
 
 test("auth loader: plain AK with metadata.sk", async () => {

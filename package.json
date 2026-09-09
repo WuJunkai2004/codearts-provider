@@ -15,7 +15,13 @@
     "src",
     "README.md"
   ],
-  "keywords": ["opencode", "opencode-plugin", "codearts", "huawei", "provider"],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "codearts",
+    "huawei",
+    "provider"
+  ],
   "license": "MIT",
   "scripts": {
     "build": "tsc",
