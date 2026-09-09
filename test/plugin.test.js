@@ -6,6 +6,21 @@ import { discoverModels, pickAgentId } from "../dist/discover.js"
 const AK = "TESTAK"
 const SK = "TESTSK"
 
+// Machine-state isolation: readStoredAuth() reads the real
+// ~/.local/share/opencode/auth.json (and caches per module instance), and
+// CODEARTS_CLI_AK/SK may leak from the environment. Both would make
+// "no credentials" tests hit the real network. Point HOME at an empty temp
+// dir so the auth store lookup always misses, and scrub env credentials.
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+const FAKE_HOME = mkdtempSync(join(tmpdir(), "codearts-test-home-"))
+process.env.HOME = FAKE_HOME
+process.env.USERPROFILE = FAKE_HOME
+delete process.env.CODEARTS_CLI_AK
+delete process.env.CODEARTS_CLI_SK
+delete process.env.CODEARTS_CLI_BASE
+
 test("sdkDate format", () => {
   assert.equal(sdkDate(new Date("2026-09-09T12:34:56.789Z")), "20260909T123456Z")
 })

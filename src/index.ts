@@ -17,14 +17,14 @@ import {
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { detectLangZH, getTranslations } from "./i18n.js";
 
 const PROVIDER_ID = "codearts";
 
 const getEnv = (name: string): string | undefined => process.env[name];
 
 // Reads AK/SK from opencode's /connect credential store
-// (~/.local/share/opencode/auth.json). Accepts both storage shapes —
-// combined "AK/SK" key or split key=SK + metadata.ak=AK.
+// (~/.local/share/opencode/auth.json, key = SK, metadata.ak = AK).
 let storedAuthCache: { ak: string; sk: string } | null | undefined;
 function readStoredAuth(): { ak: string; sk: string } | null {
   if (storedAuthCache !== undefined) return storedAuthCache;
@@ -123,51 +123,6 @@ const EXTRA_MODELS: DiscoveredModel[] = [
 // Placeholder model injected when no credentials exist yet. It never routes to
 // the gateway — its name carries the connect hint instead.
 const HINT_MODEL_ID = "connect-required";
-
-function hintModelName(lang: string): string {
-  switch (lang) {
-    case "zh":
-    case "zh-cn":
-    case "zh-hans":
-    case "zh-tw":
-    case "zh-hant":
-      return "未连接 — 请使用 /connect 添加华为云 CodeArts AK/SK";
-    default:
-      return "Not connected — add Huawei CodeArts AK/SK via /connect";
-  }
-}
-
-function detectLang(): string {
-  const raw = (
-    getEnv("CODEARTS_LANG") ??
-    getEnv("LC_ALL") ??
-    getEnv("LANG") ??
-    "en"
-  ).toLowerCase();
-  return raw.split(/[._:]/)[0];
-}
-
-function isZh(lang: string): boolean {
-  return ["zh", "zh-cn", "zh-hans", "zh-tw", "zh-hant"].includes(lang);
-}
-
-// /connect flow for api-type auth: custom prompts run FIRST and land in
-// auth.metadata; the TUI's built-in "API key" page runs LAST and lands in
-// auth.key. So AK is collected via prompt, SK via the final page.
-function authTexts(lang: string) {
-  if (isZh(lang)) {
-    return {
-      skTitle: "华为云 CodeArts 密钥（SK，第 2/2 步）",
-      akPrompt: "华为云 CodeArts 访问密钥（AK，第 1/2 步）",
-      akPlaceholder: "HPUA...",
-    };
-  }
-  return {
-    skTitle: "Huawei CodeArts Secret Key (SK, step 2/2)",
-    akPrompt: "Huawei CodeArts Access Key (AK, step 1/2)",
-    akPlaceholder: "HPUA...",
-  };
-}
 
 type StoredAuthEntry = {
   type?: string;
@@ -308,7 +263,7 @@ const server: Plugin = async (_input, pluginOptions = {}) => {
         // list. Its displayed name tells the user to run /connect.
         target.models = {
           [HINT_MODEL_ID]: {
-            name: hintModelName(detectLang()),
+            name: getTranslations(detectLangZH()).hintModelName,
             limit: { context: 1, output: 1 },
           } as ConfigModel,
         };
@@ -326,7 +281,10 @@ const server: Plugin = async (_input, pluginOptions = {}) => {
         const out: Record<string, Model> = {};
         if (!models) {
           out[HINT_MODEL_ID] = toModel(
-            { id: HINT_MODEL_ID, name: hintModelName(detectLang()) },
+            {
+              id: HINT_MODEL_ID,
+              name: getTranslations(detectLangZH()).hintModelName,
+            },
             base,
           );
           return out;
@@ -343,32 +301,35 @@ const server: Plugin = async (_input, pluginOptions = {}) => {
     // first (stored as metadata.ak), then the TUI's built-in "API key" page
     // collects the SK (stored as auth.key). The label doubles as the final
     // page title, so it spells out "SK, step 2/2".
-    auth: {
-      provider: PROVIDER_ID,
-      loader: async (getAuth: () => Promise<Auth | undefined>) => {
-        const auth = await getAuth();
-        const opts: Record<string, unknown> = {};
-        const creds = parseAuthEntry(auth as StoredAuthEntry);
-        if (!creds) return opts;
-        opts.apiKey = "codearts-signed";
-        opts.fetch = createSignedFetch(creds.ak, creds.sk);
-        return opts;
-      },
-      methods: [
-        {
-          type: "api",
-          label: authTexts(detectLang()).skTitle,
-          prompts: [
-            {
-              type: "text",
-              key: "ak",
-              message: authTexts(detectLang()).akPrompt,
-              placeholder: authTexts(detectLang()).akPlaceholder,
-            },
-          ],
+    auth: (() => {
+      const t = getTranslations(detectLangZH());
+      return {
+        provider: PROVIDER_ID,
+        loader: async (getAuth: () => Promise<Auth | undefined>) => {
+          const auth = await getAuth();
+          const opts: Record<string, unknown> = {};
+          const creds = parseAuthEntry(auth as StoredAuthEntry);
+          if (!creds) return opts;
+          opts.apiKey = "codearts-signed";
+          opts.fetch = createSignedFetch(creds.ak, creds.sk);
+          return opts;
         },
-      ],
-    } satisfies AuthHook,
+        methods: [
+          {
+            type: "api",
+            label: t.skTitle,
+            prompts: [
+              {
+                type: "text",
+                key: "ak",
+                message: t.akPrompt,
+                placeholder: t.akPlaceholder,
+              },
+            ],
+          },
+        ],
+      } satisfies AuthHook;
+    })(),
   };
   return hooks;
 };

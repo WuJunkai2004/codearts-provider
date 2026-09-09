@@ -136,8 +136,11 @@ export async function discoverModels(
     .map((m) => {
       const p = m.model_parameters ?? {};
       return {
-        id: m.model_name,
-        name: m.model_alias ?? m.model_name,
+        // model_alias is the routing ID sent in the chat/completions body
+        // (captured from the real CLI: "model":"openpangu-2.0-pro");
+        // model_name is the display name (e.g. "OpenPangu-2.0-Pro").
+        id: m.model_alias ?? m.model_name,
+        name: m.model_name,
         description: p.model_desc_en ?? p.model_desc ?? "",
         context: p.context_window ?? p.truncate_length ?? 131072,
         output: p.max_tokens ?? 32768,
