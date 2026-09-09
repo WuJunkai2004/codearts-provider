@@ -123,14 +123,14 @@ async function fetchModels(opts: Record<string, unknown>, pluginOptions: PluginO
 
 const server: Plugin = async (_input, pluginOptions = {}) => {
   const hooks: Hooks = {
-    // Runs before opencode reads cfg.provider. Without credentials (no env
-    // vars, no /connect entry) the provider is not registered at all.
+    // Runs before opencode reads cfg.provider. The provider is ALWAYS
+    // registered (so it shows up in /connect even without credentials);
+    // the signed fetch is only injected when credentials exist.
     config: async (config: Config) => {
       config.provider = config.provider ?? {}
       const { base, models, creds } = await fetchModels({}, pluginOptions)
-      if (!creds || !models) return
       const modelEntries: Record<string, ConfigModel> = {}
-      for (const m of models) modelEntries[m.id] = toConfigModel(m)
+      for (const m of models ?? EXTRA_MODELS) modelEntries[m.id] = toConfigModel(m)
 
       const existing = config.provider[PROVIDER_ID]
       const target = (existing ?? {}) as {
@@ -143,7 +143,7 @@ const server: Plugin = async (_input, pluginOptions = {}) => {
       target.npm = target.npm ?? "@ai-sdk/openai-compatible"
       target.options = target.options ?? {}
       target.options.baseURL = target.options.baseURL ?? `${base}/api/v2`
-      if (!target.options.fetch) {
+      if (creds && !target.options.fetch) {
         // placeholder apiKey: the OpenAI-compatible SDK insists on one, but the
         // signed Authorization header produced by options.fetch wins on the wire
         target.options.apiKey = target.options.apiKey ?? "codearts-signed"

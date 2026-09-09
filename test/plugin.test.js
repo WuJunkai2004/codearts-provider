@@ -132,7 +132,7 @@ test("plugin module default-exports V1 shape { id, server }", async () => {
   assert.equal(typeof mod.default.server, "function")
 })
 
-test("server() returns hooks; provider NOT registered without credentials", async (t) => {
+test("server() returns hooks with config/provider/auth", async (t) => {
   const savedAk = process.env.CODEARTS_CLI_AK
   const savedSk = process.env.CODEARTS_CLI_SK
   delete process.env.CODEARTS_CLI_AK
@@ -151,7 +151,10 @@ test("server() returns hooks; provider NOT registered without credentials", asyn
 
   const cfg = {}
   await hooks.config(cfg)
-  assert.equal(cfg.provider.codearts, undefined, "provider NOT registered without credentials")
+  const provider = cfg.provider.codearts
+  assert.ok(provider, "provider registered even without credentials (visible in /connect)")
+  assert.equal(provider.options.fetch, undefined, "no signed fetch without credentials")
+  assert.ok(Object.keys(provider.models).length > 0, "static model list present without credentials")
 
   const models = await hooks.provider.models(
     { options: { baseURL: "https://example.com/api/v2" } },
