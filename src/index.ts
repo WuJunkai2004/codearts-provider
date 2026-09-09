@@ -175,23 +175,13 @@ type StoredAuthEntry = {
   metadata?: Record<string, string>;
 };
 
-// Accepts both storage shapes:
-//  - combined legacy: key = "AK/SK" (typed in one shot)
-//  - /connect split:  key = SK, metadata.ak = AK (two-step flow)
+// /connect storage shape: key = SK, metadata.ak = AK (two-step flow).
 function parseAuthEntry(
   entry: StoredAuthEntry | undefined,
 ): { ak: string; sk: string } | null {
   if (entry?.type !== "api" || typeof entry.key !== "string") return null;
-  const key = entry.key;
-  let ak: string | undefined, sk: string | undefined;
-  if (key.includes("/")) {
-    const idx = key.indexOf("/");
-    ak = key.slice(0, idx);
-    sk = key.slice(idx + 1);
-  } else {
-    sk = key;
-    ak = entry.metadata?.ak;
-  }
+  const ak = entry.metadata?.ak;
+  const sk = entry.key;
   if (ak && sk) return { ak, sk };
   return null;
 }

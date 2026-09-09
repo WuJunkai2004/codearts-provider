@@ -166,8 +166,12 @@ test("server() returns hooks with config/provider/auth", async (t) => {
   assert.deepEqual(Object.keys(models), ["connect-required"])
   assert.match(models["connect-required"].name, /connect/i)
 
-  // auth loader: ak/sk key -> signed fetch + placeholder apiKey
-  const opts = await hooks.auth.loader(async () => ({ type: "api", key: "MYAK/MYSK" }))
+  // auth loader: two-step shape -> signed fetch + placeholder apiKey
+  const opts = await hooks.auth.loader(async () => ({
+    type: "api",
+    key: "MYSK",
+    metadata: { ak: "MYAK" },
+  }))
   assert.equal(opts.apiKey, "codearts-signed")
   assert.equal(typeof opts.fetch, "function")
 })
@@ -211,14 +215,14 @@ test("auth loader: /connect two-step shape (key=SK, metadata.ak=AK)", async () =
   assert.equal(opts.apiKey, "codearts-signed")
 })
 
-test("auth loader: combined legacy shape (key=AK/SK)", async () => {
+test("auth loader: combined legacy shape is rejected", async () => {
   const mod = await import("../dist/index.js?combined-key")
   const hooks = await mod.default.server({}, {})
   const opts = await hooks.auth.loader(async () => ({
     type: "api",
     key: "MYAK/MYSK",
   }))
-  assert.equal(typeof opts.fetch, "function")
+  assert.deepEqual(opts, {}, "combined AK/SK key is no longer a valid storage shape")
 })
 
 test("auth loader: partial credentials -> empty options", async () => {
