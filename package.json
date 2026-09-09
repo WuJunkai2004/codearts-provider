@@ -1,0 +1,33 @@
+{
+  "name": "opencode-codearts-provider",
+  "version": "0.1.0",
+  "description": "OpenCode provider plugin for Huawei Cloud CodeArts (snap-access InferHub API, SDK-HMAC-SHA256 signed)",
+  "type": "module",
+  "types": "dist/index.d.ts",
+  "exports": {
+    "./server": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "keywords": ["opencode", "opencode-plugin", "codearts", "huawei", "provider"],
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.14.0"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.18.5",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.8.0"
+  }
+}
