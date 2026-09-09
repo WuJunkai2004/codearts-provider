@@ -199,15 +199,62 @@ test("hint model name is i18n-aware (zh vs en, CODEARTS_LANG override)", async (
   }
 })
 
-test("auth loader: plain AK with metadata.sk", async () => {
-  const mod = await import("../dist/index.js?meta-sk")
+test("auth loader: /connect two-step shape (key=SK, metadata.ak=AK)", async () => {
+  const mod = await import("../dist/index.js?meta-ak")
   const hooks = await mod.default.server({}, {})
   const opts = await hooks.auth.loader(async () => ({
     type: "api",
-    key: "MYAK",
-    metadata: { sk: "MYSK" },
+    key: "MYSK",
+    metadata: { ak: "MYAK" },
   }))
   assert.equal(typeof opts.fetch, "function")
+  assert.equal(opts.apiKey, "codearts-signed")
+})
+
+test("auth loader: combined legacy shape (key=AK/SK)", async () => {
+  const mod = await import("../dist/index.js?combined-key")
+  const hooks = await mod.default.server({}, {})
+  const opts = await hooks.auth.loader(async () => ({
+    type: "api",
+    key: "MYAK/MYSK",
+  }))
+  assert.equal(typeof opts.fetch, "function")
+})
+
+test("auth loader: partial credentials -> empty options", async () => {
+  const mod = await import("../dist/index.js?partial")
+  const hooks = await mod.default.server({}, {})
+  // SK only, no metadata.ak
+  const opts = await hooks.auth.loader(async () => ({ type: "api", key: "MYSK" }))
+  assert.deepEqual(opts, {})
+  // SK with unrelated metadata
+  const opts2 = await hooks.auth.loader(async () => ({
+    type: "api",
+    key: "MYSK",
+    metadata: { other: "x" },
+  }))
+  assert.deepEqual(opts2, {})
+})
+
+test("auth method labels are i18n-aware", async () => {
+  const mod = await import("../dist/index.js?auth-i18n")
+  const saved = process.env.CODEARTS_LANG
+  try {
+    delete process.env.CODEARTS_LANG
+    let hooks = await mod.default.server({}, {})
+    let m = hooks.auth.methods[0]
+    assert.match(m.label, /SK, step 2\/2/)
+    assert.match(m.prompts[0].message, /AK, step 1\/2/)
+
+    process.env.CODEARTS_LANG = "zh"
+    hooks = await mod.default.server({}, {})
+    m = hooks.auth.methods[0]
+    assert.match(m.label, /SK，第 2\/2 步/)
+    assert.match(m.prompts[0].message, /AK，第 1\/2 步/)
+  } finally {
+    if (saved === undefined) delete process.env.CODEARTS_LANG
+    else process.env.CODEARTS_LANG = saved
+  }
 })
 
 test("auth loader: no auth -> empty options", async () => {

@@ -23,7 +23,8 @@ const PROVIDER_ID = "codearts";
 const getEnv = (name: string): string | undefined => process.env[name];
 
 // Reads AK/SK from opencode's /connect credential store
-// (~/.local/share/opencode/auth.json, key format "AK/SK").
+// (~/.local/share/opencode/auth.json). Accepts both storage shapes —
+// combined "AK/SK" key or split key=SK + metadata.ak=AK.
 let storedAuthCache: { ak: string; sk: string } | null | undefined;
 function readStoredAuth(): { ak: string; sk: string } | null {
   if (storedAuthCache !== undefined) return storedAuthCache;
@@ -34,16 +35,8 @@ function readStoredAuth(): { ak: string; sk: string } | null {
         join(homedir(), ".local", "share", "opencode", "auth.json"),
         "utf8",
       ),
-    ) as Record<string, { type?: string; key?: string } | undefined>;
-    const entry = raw?.[PROVIDER_ID];
-    if (
-      entry?.type === "api" &&
-      typeof entry.key === "string" &&
-      entry.key.includes("/")
-    ) {
-      const [ak, sk] = entry.key.split("/");
-      if (ak && sk) result = { ak, sk };
-    }
+    ) as Record<string, StoredAuthEntry | undefined>;
+    result = parseAuthEntry(raw?.[PROVIDER_ID]);
   } catch {
     // no stored credential
   }
@@ -152,6 +145,55 @@ function detectLang(): string {
     "en"
   ).toLowerCase();
   return raw.split(/[._:]/)[0];
+}
+
+function isZh(lang: string): boolean {
+  return ["zh", "zh-cn", "zh-hans", "zh-tw", "zh-hant"].includes(lang);
+}
+
+// /connect flow for api-type auth: custom prompts run FIRST and land in
+// auth.metadata; the TUI's built-in "API key" page runs LAST and lands in
+// auth.key. So AK is collected via prompt, SK via the final page.
+function authTexts(lang: string) {
+  if (isZh(lang)) {
+    return {
+      skTitle: "华为云 CodeArts 密钥（SK，第 2/2 步）",
+      akPrompt: "华为云 CodeArts 访问密钥（AK，第 1/2 步）",
+      akPlaceholder: "HPUA...",
+    };
+  }
+  return {
+    skTitle: "Huawei CodeArts Secret Key (SK, step 2/2)",
+    akPrompt: "Huawei CodeArts Access Key (AK, step 1/2)",
+    akPlaceholder: "HPUA...",
+  };
+}
+
+type StoredAuthEntry = {
+  type?: string;
+  key?: string;
+  metadata?: Record<string, string>;
+};
+
+// Accepts both storage shapes:
+//  - combined legacy: key = "AK/SK" (typed in one shot)
+//  - /connect split:  key = SK, metadata.ak = AK (two-step flow)
+function parseAuthEntry(
+  entry: StoredAuthEntry | undefined,
+): { ak: string; sk: string } | null {
+  if (entry?.type !== "api" || typeof entry.key !== "string") return null;
+  const key = entry.key;
+  let ak: string | undefined, sk: string | undefined;
+  if (key.includes("/")) {
+    const idx = key.indexOf("/");
+    ak = key.slice(0, idx);
+    sk = key.slice(idx + 1);
+  } else {
+    sk = key;
+    ak = entry.metadata?.ak;
+  }
+  if (ak && sk) return { ak, sk };
+  return null;
 }
 
 function toModel(m: DiscoveredModel, base: string): Model {
@@ -304,39 +346,34 @@ const server: Plugin = async (_input, pluginOptions = {}) => {
       },
     } satisfies ProviderHook,
 
-    // Turns a stored /connect credential ("ak/sk" or plain AK with SK in
-    // metadata) into provider options: placeholder apiKey plus the signed
-    // fetch injected via options.fetch.
+    // Turns a stored /connect credential into provider options: placeholder
+    // apiKey plus the signed fetch injected via options.fetch.
+    //
+    // Two-step /connect flow (api type): our custom prompt collects the AK
+    // first (stored as metadata.ak), then the TUI's built-in "API key" page
+    // collects the SK (stored as auth.key). The label doubles as the final
+    // page title, so it spells out "SK, step 2/2".
     auth: {
       provider: PROVIDER_ID,
       loader: async (getAuth: () => Promise<Auth | undefined>) => {
         const auth = await getAuth();
         const opts: Record<string, unknown> = {};
-        let ak: string | undefined, sk: string | undefined;
-        if (auth?.type === "api") {
-          const key = auth.key ?? "";
-          if (key.includes("/")) {
-            [ak, sk] = key.split("/");
-          } else {
-            ak = key;
-            sk = auth.metadata?.sk;
-          }
-        }
-        if (!ak || !sk) return opts;
+        const creds = parseAuthEntry(auth as StoredAuthEntry);
+        if (!creds) return opts;
         opts.apiKey = "codearts-signed";
-        opts.fetch = createSignedFetch(ak, sk);
+        opts.fetch = createSignedFetch(creds.ak, creds.sk);
         return opts;
       },
       methods: [
         {
           type: "api",
-          label: "Huawei CodeArts AK/SK (format: AK/SK)",
+          label: authTexts(detectLang()).skTitle,
           prompts: [
             {
               type: "text",
-              key: "key",
-              message: "Enter CODEARTS AK/SK (separated by /)",
-              placeholder: "HPUA.../zjnh...",
+              key: "ak",
+              message: authTexts(detectLang()).akPrompt,
+              placeholder: authTexts(detectLang()).akPlaceholder,
             },
           ],
         },
