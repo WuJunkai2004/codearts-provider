@@ -20,7 +20,7 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/"
+    "test": "node --test \"test/*.test.js\""
   },
   "peerDependencies": {
     "@opencode-ai/plugin": ">=1.14.0"

@@ -1,7 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { signRequest, sdkDate, createSignedFetch } from "../src/signer.js"
-import { discoverModels, pickAgentId } from "../src/discover.js"
+import { signRequest, sdkDate, createSignedFetch } from "../dist/signer.js"
+import { discoverModels, pickAgentId } from "../dist/discover.js"
 
 const AK = "TESTAK"
 const SK = "TESTSK"
@@ -127,7 +127,7 @@ test("discoverModels maps gpts.models into provider models", async (t) => {
 })
 
 test("plugin module default-exports V1 shape { id, server }", async () => {
-  const mod = await import("../src/index.js")
+  const mod = await import("../dist/index.js")
   assert.equal(mod.default.id, "opencode-codearts-provider")
   assert.equal(typeof mod.default.server, "function")
 })
@@ -142,8 +142,8 @@ test("server() returns hooks; provider NOT registered without credentials", asyn
     if (savedSk !== undefined) process.env.CODEARTS_CLI_SK = savedSk
   })
 
-  const mod = await import("../src/index.js?no-creds")
-  const hooks = await mod.default.server({ client: {}, project: {}, directory: ".", worktree: ".", $: {} } as never, {})
+  const mod = await import("../dist/index.js?no-creds")
+  const hooks = await mod.default.server({ client: {}, project: {}, directory: ".", worktree: ".", $: {} }, {})
   assert.ok(hooks.config, "config hook")
   assert.equal(hooks.provider.id, "codearts")
   assert.equal(typeof hooks.provider.models, "function")
@@ -167,8 +167,8 @@ test("server() returns hooks; provider NOT registered without credentials", asyn
 })
 
 test("auth loader: plain AK with metadata.sk", async () => {
-  const mod = await import("../src/index.js?meta-sk")
-  const hooks = await mod.default.server({} as never, {})
+  const mod = await import("../dist/index.js?meta-sk")
+  const hooks = await mod.default.server({}, {})
   const opts = await hooks.auth.loader(async () => ({
     type: "api",
     key: "MYAK",
@@ -178,8 +178,8 @@ test("auth loader: plain AK with metadata.sk", async () => {
 })
 
 test("auth loader: no auth -> empty options", async () => {
-  const mod = await import("../src/index.js?no-auth")
-  const hooks = await mod.default.server({} as never, {})
+  const mod = await import("../dist/index.js?no-auth")
+  const hooks = await mod.default.server({}, {})
   const opts = await hooks.auth.loader(async () => undefined)
   assert.deepEqual(opts, {})
 })
@@ -221,8 +221,8 @@ test("with env credentials provider is registered with discovered + extra models
     globalThis.fetch = realFetch
   })
 
-  const mod = await import("../src/index.js?with-creds")
-  const hooks = await mod.default.server({} as never, {})
+  const mod = await import("../dist/index.js?with-creds")
+  const hooks = await mod.default.server({}, {})
   const cfg = {}
   await hooks.config(cfg)
   const provider = cfg.provider.codearts

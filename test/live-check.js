@@ -1,4 +1,4 @@
-import { signRequest } from "../plugin/signer.js"
+import { signRequest } from "../dist/signer.js"
 
 const AK = process.env.CODEARTS_CLI_AK
 const SK = process.env.CODEARTS_CLI_SK

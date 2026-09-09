@@ -1,7 +1,19 @@
 import { createSignedFetch } from "./signer.js"
 
-const DEFAULT_BASE = "https://snap-access.cn-north-4.myhuaweicloud.com"
-const FALLBACK_MODELS = [
+export const DEFAULT_BASE = "https://snap-access.cn-north-4.myhuaweicloud.com"
+
+export type DiscoveredModel = {
+  id: string
+  name: string
+  description?: string
+  context?: number
+  output?: number
+  reasoning?: boolean
+  images?: boolean
+  apiUrl?: string
+}
+
+const FALLBACK_MODELS: DiscoveredModel[] = [
   {
     id: "GLM-5.2",
     name: "GLM-5.2",
@@ -22,38 +34,23 @@ const FALLBACK_MODELS = [
   },
 ]
 
-function toModel(m) {
-  return {
-    id: m.id,
-    providerID: "codearts",
-    name: m.name ?? m.id,
-    family: "codearts",
-    api: {
-      id: m.id,
-      url: m.apiUrl ?? DEFAULT_BASE + "/api/v2",
-      npm: "@ai-sdk/openai-compatible",
-    },
-    status: "active",
-    headers: {},
-    options: {},
-    cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
-    limit: { context: m.context ?? 131072, output: m.output ?? 32768 },
-    capabilities: {
-      temperature: true,
-      reasoning: Boolean(m.reasoning),
-      attachment: Boolean(m.images),
-      toolcall: true,
-      input: { text: true, audio: false, image: Boolean(m.images), video: false, pdf: false },
-      output: { text: true, audio: false, image: false, video: false, pdf: false },
-      interleaved: false,
-    },
-    release_date: "",
-    variants: {},
-  }
+type AgentEntry = {
+  agent_id?: string
+  supported_clients?: string[]
+  supportedClients?: string[]
+  app_name?: string
+  agent_name?: string
+  alias?: { alias_en_us?: string; alias_zh_cn?: string }
+  is_primary_agent?: boolean
 }
 
-export function pickAgentId(agents) {
-  const list = agents?.agents ?? agents?.items ?? (Array.isArray(agents) ? agents : [])
+type AgentsResponse = {
+  agents?: AgentEntry[]
+  items?: AgentEntry[]
+}
+
+export function pickAgentId(agents: AgentsResponse | AgentEntry[] | undefined): string | undefined {
+  const list = (agents as AgentsResponse | undefined)?.agents ?? (agents as AgentsResponse | undefined)?.items ?? (Array.isArray(agents) ? agents : [])
   for (const a of list) {
     const clients = a.supported_clients ?? a.supportedClients ?? []
     const name = (a.app_name || a.agent_name || a.alias?.alias_en_us || a.alias?.alias_zh_cn || "").toString()
@@ -65,7 +62,7 @@ export function pickAgentId(agents) {
   return undefined
 }
 
-export async function discoverModels(ak, sk, base = DEFAULT_BASE) {
+export async function discoverModels(ak: string, sk: string, base: string = DEFAULT_BASE): Promise<DiscoveredModel[]> {
   const doFetch = createSignedFetch(ak, sk)
   const agentListUrl = `${base}/v1/agent-center/agents/useragents?offset=0&limit=100`
   const listRes = await doFetch(agentListUrl, {
@@ -73,7 +70,7 @@ export async function discoverModels(ak, sk, base = DEFAULT_BASE) {
     headers: { "Content-Type": "application/json", "X-Language": "zh-cn", "Agent-Type": "AgentCenter" },
   })
   if (!listRes.ok) throw new Error(`agent list failed: HTTP ${listRes.status} ${await listRes.text()}`)
-  const listJson = await listRes.json()
+  const listJson: AgentsResponse = await listRes.json()
   const agentId = pickAgentId(listJson)
   if (!agentId) throw new Error("no agent_id found in useragents response")
 
@@ -84,7 +81,20 @@ export async function discoverModels(ak, sk, base = DEFAULT_BASE) {
   if (!detailRes.ok) throw new Error(`agent detail failed: HTTP ${detailRes.status} ${await detailRes.text()}`)
   const detail = await detailRes.json()
 
-  const gpts = detail.gpts?.models ?? []
+  const gpts: Array<{
+    model_name: string
+    model_alias?: string
+    model_parameters?: {
+      display_enabled?: boolean
+      model_desc_en?: string
+      model_desc?: string
+      context_window?: number
+      truncate_length?: number
+      max_tokens?: number
+      thinking_type?: string | number
+      supports_images?: boolean
+    }
+  }> = detail.gpts?.models ?? []
   const models = gpts
     .filter((m) => m.model_parameters?.display_enabled !== false)
     .map((m) => {

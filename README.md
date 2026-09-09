@@ -11,16 +11,26 @@ OpenCode 插件：将华为云 CodeArts（snap-access InferHub）模型接入 op
 
 ## 安装
 
-1. 全局配置 `~/.config/opencode/opencode.json`：
+### 方式一：测试安装法（本地开发，全局生效）
+
+在全局配置 `~/.config/opencode/opencode.jsonc` 的 `plugin` 数组中添加本地包目录的 `file://` 路径：
+
+```jsonc
+{
+  "plugin": ["file:///D:/code/huaweicode/codearts-provider"]
+}
+```
+
+opencode 会读取包的 `exports["./server"]`（`dist/index.js`），无需发布 npm。
+
+### 方式二：发布为 npm 包后
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["file:///D:/code/huaweicode/codearts-provider/plugin/index.js"]
+  "plugin": ["opencode-codearts-provider"]
 }
 ```
-
-（或发布为 npm 包后用包名引用）
 
 2. 设置凭证（环境变量方式）：
 
@@ -42,8 +52,8 @@ opencode run -m codearts/GLM-5.2 "hello"
 
 在 plugin 数组中用元组形式传入（可选）：
 
-```json
-"plugin": [["file:///.../plugin/index.js", { "baseURL": "https://snap-access.cn-north-4.myhuaweicloud.com", "ak": "...", "sk": "..." }]]
+```jsonc
+"plugin": [["file:///D:/code/huaweicode/codearts-provider", { "baseURL": "https://snap-access.cn-north-4.myhuaweicloud.com", "ak": "...", "sk": "..." }]]
 ```
 
 | 选项 | 默认值 | 说明 |
@@ -248,9 +258,19 @@ chat("Qwen3-VL-235B", [{"role": "user", "content": [
 ## 文件结构
 
 ```
-plugin/index.js    # 插件入口：config/provider/auth hooks
-plugin/signer.js   # SDK-HMAC-SHA256 签名 + 签名 fetch
-plugin/discover.js # agent-center 模型发现
+src/index.ts      # 插件入口：V1 形态 default export { id, server }（config/provider/auth hooks）
+src/signer.ts     # SDK-HMAC-SHA256 签名 + 签名 fetch
+src/discover.ts   # agent-center 模型发现
+dist/             # tsc 构建产物（exports["./server"] 指向 dist/index.js）
 test/plugin.test.js
 test/live-check.js # 真实 API 冒烟测试（需环境变量）
+```
+
+## 开发
+
+```
+npm install
+npm run build      # tsc -> dist
+npm run typecheck
+npm test
 ```
