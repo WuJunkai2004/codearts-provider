@@ -16,14 +16,14 @@ const ZH_T: Translations = {
   hintModelName: "未连接 — 请使用 /connect 添加华为云 CodeArts AK/SK",
   skTitle: "华为云 CodeArts 密钥（SK，第 2/2 步）",
   akPrompt: "华为云 CodeArts 访问密钥（AK，第 1/2 步）",
-  akPlaceholder: "HPUA...",
+  akPlaceholder: "Access Key Id",
 };
 
 const EN_T: Translations = {
   hintModelName: "Not connected — add Huawei CodeArts AK/SK via /connect",
   skTitle: "Huawei CodeArts Secret Key (SK, step 2/2)",
   akPrompt: "Huawei CodeArts Access Key (AK, step 1/2)",
-  akPlaceholder: "HPUA...",
+  akPlaceholder: "Access Key Id",
 };
 
 export function getTranslations(langZH: boolean): Translations {
