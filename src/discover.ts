@@ -13,27 +13,6 @@ export type DiscoveredModel = {
   apiUrl?: string;
 };
 
-const FALLBACK_MODELS: DiscoveredModel[] = [
-  {
-    id: "GLM-5.2",
-    name: "GLM-5.2",
-    description: "CodeArts flagship coding model",
-    context: 202752,
-    output: 131072,
-    reasoning: true,
-    images: false,
-  },
-  {
-    id: "Qwen3-VL-235B",
-    name: "Qwen3-VL-235B",
-    description: "Qwen3 multimodal model",
-    context: 131072,
-    output: 32768,
-    reasoning: false,
-    images: true,
-  },
-];
-
 type AgentEntry = {
   agent_id?: string;
   supported_clients?: string[];
@@ -152,5 +131,5 @@ export async function discoverModels(
         apiUrl: base + "/api/v2",
       };
     });
-  return models.length > 0 ? models : FALLBACK_MODELS;
+  return models;
 }

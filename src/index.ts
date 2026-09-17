@@ -1,14 +1,18 @@
-import type {
-  Plugin,
-  PluginModule,
-  Hooks,
-  Config,
-  ProviderHook,
-  AuthHook,
-  PluginOptions,
+import {
+  tool,
+  type Plugin,
+  type PluginModule,
+  type Hooks,
+  type Config,
+  type ProviderHook,
+  type AuthHook,
+  type PluginOptions,
 } from "@opencode-ai/plugin";
 import type { Model, Provider, Auth } from "@opencode-ai/sdk/v2";
+import { z } from "zod";
 import { createSignedFetch } from "./signer.js";
+import { describeImage, imageToDataUrl } from "./vision.js";
+import { readModelCache, writeModelCache } from "./cache.js";
 import {
   discoverModels,
   DEFAULT_BASE,
@@ -16,12 +20,17 @@ import {
 } from "./discover.js";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { detectLangZH, getTranslations } from "./i18n.js";
 
 const PROVIDER_ID = "codearts";
 
 const getEnv = (name: string): string | undefined => process.env[name];
+
+// Resolves a user-supplied image path against the session's project directory.
+function resolvePath(directory: string, p: string): string {
+  return isAbsolute(p) ? p : join(directory || process.cwd(), p);
+}
 
 // Reads AK/SK from opencode's /connect credential store
 // (~/.local/share/opencode/auth.json, key = SK, metadata.ak = AK).
@@ -66,40 +75,13 @@ function resolveBase(
     .replace(/\/$/, "");
 }
 
-// Models reachable through the gateway but NOT served by agent-center
-// discovery for this account (verified live; ids are routing aliases).
-// Qwen3.6-27B-VL / Qwen3.5-397B-A17B-VL / ClaudeV1 / Qwen3-Coder-30B-A3B
-// are NOT registered for this account and were removed.
-const EXTRA_MODELS: DiscoveredModel[] = [
-  {
-    id: "GLM-5.2",
-    name: "GLM-5.2",
-    context: 202752,
-    output: 131072,
-    reasoning: true,
-    images: false,
-  },
-  {
-    id: "glm-5.2-sft-harmony",
-    name: "GLM-5.2-ArkTS-SPARK",
-    context: 131072,
-    output: 32768,
-    reasoning: true,
-    images: false,
-  },
-  {
-    id: "Qwen3-VL-235B",
-    name: "Qwen3-VL-235B",
-    context: 131072,
-    output: 32768,
-    reasoning: false,
-    images: true,
-  },
-];
-
 // Placeholder model injected when no credentials exist yet. It never routes to
 // the gateway — its name carries the connect hint instead.
 const HINT_MODEL_ID = "connect-required";
+
+// Cache of the last successful discovery, kept as a module-level fallback for
+// the brief window before the file cache is read (and for tests).
+let lastGoodModels: DiscoveredModel[] | null = null;
 
 type StoredAuthEntry = {
   type?: string;
@@ -188,23 +170,87 @@ async function fetchModels(
     return { base, models: null as DiscoveredModel[] | null, creds: null };
   try {
     const discovered = await discoverModels(creds.ak, creds.sk, base);
-    // discovered models win; extras supplement without overriding
-    const seen = new Set(discovered.map((m) => m.id));
-    const models = [
-      ...discovered,
-      ...EXTRA_MODELS.filter((m) => !seen.has(m.id)),
-    ];
-    return { base, models, creds };
+    if (discovered.length > 0) {
+      lastGoodModels = discovered;
+      writeModelCache(base, discovered);
+      return { base, models: discovered, creds };
+    }
   } catch (e) {
     console.error(
-      "[codearts-provider] model discovery failed, using extras only:",
+      "[codearts-provider] model discovery failed, falling back to cache:",
       (e as Error)?.message ?? e,
     );
-    return { base, models: EXTRA_MODELS, creds };
   }
+  // Discovery failed or returned nothing: reuse the last good list (in-memory,
+  // then on disk) instead of hardcoded models. Returning null keeps the
+  // "no models" path so the caller can show the connect hint.
+  const cached =
+    (lastGoodModels && lastGoodModels.length > 0 ? lastGoodModels : null) ??
+    readModelCache(base)?.models ??
+    null;
+  return { base, models: cached, creds };
 }
 
+// Name of the tool exposed to the LLM when the vision tool is enabled.
+export const VISION_TOOL_ID = "codearts_vision";
+// Default multimodal model used by the vision tool (routing alias).
+export const DEFAULT_VISION_MODEL = "Qwen3-VL-235B";
+
 const server: Plugin = async (_input, pluginOptions = {}) => {
+  const po = pluginOptions as {
+    visionTool?: boolean;
+    visionModel?: string;
+  };
+  const visionEnabled = po.visionTool !== false;
+  const visionModel = po.visionModel ?? DEFAULT_VISION_MODEL;
+  const t = getTranslations(detectLangZH());
+
+  // The vision tool is a plugin-level LLM tool, registered whenever the option
+  // is on. Credentials are resolved lazily at call time: the config hook may
+  // not see /connect-stored credentials on first boot, so a registration-time
+  // guard would silently drop the tool. Calling without credentials yields a
+  // clear error instead.
+  const visionTool = tool({
+    description: t.visionToolDescription,
+    args: {
+      image: z
+        .string()
+        .optional()
+        .describe("Local image file path (png/jpg/jpeg/gif/webp/bmp)"),
+      image_url: z
+        .string()
+        .optional()
+        .describe("Remote image URL or data: URL"),
+      prompt: z
+        .string()
+        .optional()
+        .describe("What to ask about the image (default: describe it)"),
+    },
+    execute: async (args, context) => {
+      const creds = resolveCreds({}, pluginOptions);
+      if (!creds) throw new Error(t.visionNoCreds);
+      if (!args.image && !args.image_url) throw new Error(t.visionNoImage);
+      const dataUrl = args.image
+        ? imageToDataUrl(resolvePath(context.directory, args.image))
+        : (args.image_url as string);
+      const out = await describeImage({
+        ak: creds.ak,
+        sk: creds.sk,
+        base: resolveBase({}, pluginOptions),
+        model: visionModel,
+        image: { dataUrl },
+        prompt: args.prompt ?? t.visionDefaultPrompt,
+        signal: context.abort,
+      });
+      if (!out) throw new Error(t.visionEmpty);
+      return {
+        title: `${t.visionTitle} · ${visionModel}`,
+        output: out,
+        metadata: { model: visionModel, image: args.image ?? args.image_url },
+      };
+    },
+  });
+
   const hooks: Hooks = {
     // Runs before opencode reads cfg.provider. The provider is ALWAYS
     // registered (so it shows up in /connect even without credentials);
@@ -229,10 +275,13 @@ const server: Plugin = async (_input, pluginOptions = {}) => {
         // signed Authorization header produced by options.fetch wins on the wire
         target.options.apiKey = target.options.apiKey ?? "codearts-signed";
         target.options.fetch = createSignedFetch(creds.ak, creds.sk);
-        if (!existing || Object.keys(target.models ?? {}).length === 0) {
+        if (
+          models &&
+          models.length > 0 &&
+          (!existing || Object.keys(target.models ?? {}).length === 0)
+        ) {
           const modelEntries: Record<string, ConfigModel> = {};
-          for (const m of models ?? EXTRA_MODELS)
-            modelEntries[m.id] = toConfigModel(m);
+          for (const m of models) modelEntries[m.id] = toConfigModel(m);
           target.models = modelEntries;
         }
       } else if (!creds) {
@@ -307,6 +356,7 @@ const server: Plugin = async (_input, pluginOptions = {}) => {
         ],
       } satisfies AuthHook;
     })(),
+    tool: visionEnabled ? { [VISION_TOOL_ID]: visionTool } : undefined,
   };
   return hooks;
 };

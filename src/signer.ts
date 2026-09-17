@@ -90,9 +90,17 @@ const CHAT_PATH_RE = /\/api\/v2\/chat\/completions\/?$/;
  * gateway routes by request shape — without them the request lands on a
  * wrong backend (Whitelabel 404) or the model reports "not registered".
  */
-export function createSignedFetch(ak: string, sk: string) {
-  // per-process pseudo session id, mirrors one TUI chat session
-  let sessionId = `ses_${Math.random().toString(36).slice(2, 11)}${Date.now().toString(36)}`;
+export function createSignedFetch(
+  ak: string,
+  sk: string,
+  options: { sessionId?: string } = {},
+) {
+  // per-process pseudo session id, mirrors one TUI chat session. Callers that
+  // must not share a session slot (e.g. the vision tool) pass an explicit id:
+  // the server counts concurrent sessions by user-session-id (limit 3).
+  const sessionId =
+    options.sessionId ??
+    `ses_${Math.random().toString(36).slice(2, 11)}${Date.now().toString(36)}`;
   return async (
     input: RequestInfo | URL,
     init?: RequestInit,
