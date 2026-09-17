@@ -2,6 +2,9 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { signRequest, sdkDate, createSignedFetch } from "../dist/signer.js"
 import { discoverModels, pickAgentId } from "../dist/discover.js"
+import { extractContent, imageToDataUrl } from "../dist/vision.js"
+import { readModelCache, writeModelCache } from "../dist/cache.js"
+import { mkdirSync, writeFileSync } from "node:fs"
 
 const AK = "TESTAK"
 const SK = "TESTSK"
@@ -343,7 +346,7 @@ test("auth loader: no auth -> empty options", async () => {
   assert.deepEqual(opts, {})
 })
 
-test("with env credentials provider is registered with discovered + extra models", async (t) => {
+test("with env credentials provider is registered with discovered models", async (t) => {
   const savedAk = process.env.CODEARTS_CLI_AK
   const savedSk = process.env.CODEARTS_CLI_SK
   process.env.CODEARTS_CLI_AK = "TESTAK"
@@ -389,13 +392,259 @@ test("with env credentials provider is registered with discovered + extra models
   assert.equal(typeof provider.options.fetch, "function", "signed fetch injected")
   assert.equal(provider.options.apiKey, "codearts-signed")
   const names = Object.keys(provider.models)
-  assert.ok(names.includes("GLM-5.2"), "discovered model present")
-  assert.ok(names.includes("Qwen3-VL-235B"), "extra static model present")
-  assert.ok(names.includes("OpenPangu-2.0-Pro") === false, "only mocked discovery results")
+  assert.deepEqual(names, ["GLM-5.2"], "only discovered models, no hardcoded extras")
 
   const models = await hooks.provider.models({ options: { baseURL: "https://example.com/api/v2" } }, { auth: undefined })
-  assert.equal(models["Qwen3-VL-235B"].capabilities.input.image, true, "VL model marked multimodal")
   assert.equal(models["GLM-5.2"].capabilities.input.image, false, "GLM not multimodal")
+})
+
+test("readModelCache round-trips and rejects mismatched base", () => {
+  const p = join(FAKE_HOME, "cache-roundtrip.json")
+  const models = [{ id: "GLM-5.2", name: "GLM-5.2", context: 202752 }]
+  writeModelCache("https://example.com", models, p)
+
+  const hit = readModelCache("https://example.com", p)
+  assert.ok(hit, "cache hit for same base")
+  assert.equal(hit.models[0].id, "GLM-5.2")
+  assert.ok(typeof hit.fetchedAt === "number", "fetchedAt recorded")
+
+  assert.equal(readModelCache("https://other.com", p), null, "base mismatch = miss")
+  assert.equal(readModelCache("https://example.com", join(FAKE_HOME, "nope.json")), null, "missing file = miss")
+})
+
+test("readModelCache tolerates malformed cache files", () => {
+  const bad = join(FAKE_HOME, "cache-bad.json")
+  writeFileSync(bad, "{not json")
+  assert.equal(readModelCache("https://example.com", bad), null, "invalid JSON = miss")
+  writeFileSync(bad, JSON.stringify({ base: "https://example.com", models: "nope" }))
+  assert.equal(readModelCache("https://example.com", bad), null, "non-array models = miss")
+})
+
+test("discovery failure falls back to the file cache, not hardcoded models", async (t) => {
+  const savedAk = process.env.CODEARTS_CLI_AK
+  const savedSk = process.env.CODEARTS_CLI_SK
+  process.env.CODEARTS_CLI_AK = "TESTAK"
+  process.env.CODEARTS_CLI_SK = "TESTSK"
+  t.after(() => {
+    if (savedAk === undefined) delete process.env.CODEARTS_CLI_AK
+    else process.env.CODEARTS_CLI_AK = savedAk
+    if (savedSk === undefined) delete process.env.CODEARTS_CLI_SK
+    else process.env.CODEARTS_CLI_SK = savedSk
+  })
+
+  // Seed the real cache path (~/.local/share/opencode under the fake HOME).
+  mkdirSync(join(FAKE_HOME, ".local", "share", "opencode"), { recursive: true })
+  writeModelCache("https://example.com", [
+    { id: "openpangu-2.0-pro", name: "OpenPangu-2.0-Pro", context: 131072, output: 32768 },
+  ])
+
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async () => {
+    throw new Error("network down")
+  }
+  t.after(() => {
+    globalThis.fetch = realFetch
+  })
+
+  const realError = console.error
+  console.error = () => {}
+  t.after(() => {
+    console.error = realError
+  })
+
+  const mod = await import("../dist/index.js?cache-fallback")
+  const hooks = await mod.default.server({}, { baseURL: "https://example.com" })
+  const models = await hooks.provider.models({ options: { baseURL: "https://example.com/api/v2" } }, { auth: undefined })
+  assert.deepEqual(Object.keys(models), ["openpangu-2.0-pro"], "cached models served on failure")
+  assert.equal(models["openpangu-2.0-pro"].capabilities.input.image, false)
+})
+
+test("empty discovery does not poison the cache with hardcoded models", async (t) => {
+  const savedAk = process.env.CODEARTS_CLI_AK
+  const savedSk = process.env.CODEARTS_CLI_SK
+  process.env.CODEARTS_CLI_AK = "TESTAK"
+  process.env.CODEARTS_CLI_SK = "TESTSK"
+  t.after(() => {
+    if (savedAk === undefined) delete process.env.CODEARTS_CLI_AK
+    else process.env.CODEARTS_CLI_AK = savedAk
+    if (savedSk === undefined) delete process.env.CODEARTS_CLI_SK
+    else process.env.CODEARTS_CLI_SK = savedSk
+  })
+
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.includes("useragents")) return Response.json({ agents: [{ agent_id: "ag1", supported_clients: ["CLI"] }] })
+    if (url.includes("agents/detail")) return Response.json({ gpts: { models: [] } })
+    throw new Error("unexpected url " + url)
+  }
+  t.after(() => {
+    globalThis.fetch = realFetch
+  })
+
+  // Distinct base so the cache seeded by the previous test is not reused.
+  const mod = await import("../dist/index.js?empty-discovery")
+  const hooks = await mod.default.server({}, { baseURL: "https://empty.example.com" })
+  const models = await hooks.provider.models({ options: { baseURL: "https://empty.example.com/api/v2" } }, { auth: undefined })
+  assert.deepEqual(Object.keys(models), ["connect-required"], "empty discovery -> hint model, no invented models")
+})
+
+test("createSignedFetch accepts an explicit sessionId (vision slot isolation)", async (t) => {
+  let captured = null
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (input, init) => {
+    captured = { init }
+    return new Response("data: [DONE]", { status: 200 })
+  }
+  t.after(() => {
+    globalThis.fetch = realFetch
+  })
+
+  const signedFetch = createSignedFetch(AK, SK, { sessionId: "ses_vision_fixed" })
+  await signedFetch("https://example.com/api/v2/chat/completions", {
+    method: "POST",
+    body: JSON.stringify({ model: "Qwen3-VL-235B", messages: [] }),
+  })
+  assert.equal(captured.init.headers["user-session-id"], "ses_vision_fixed")
+  assert.equal(captured.init.headers["x-ot-session-id"], "ses_vision_fixed")
+})
+
+test("extractContent parses SSE deltas and plain JSON", () => {
+  const sse = [
+    'data: {"choices":[{"delta":{"content":"红色"}}]}',
+    'data: {"choices":[{"delta":{"content":"的圆"}}]}',
+    "data: [DONE]",
+  ].join("\n")
+  assert.equal(extractContent(sse, "text/event-stream"), "红色的圆")
+
+  const json = JSON.stringify({ choices: [{ message: { content: "hello" } }] })
+  assert.equal(extractContent(json, "application/json"), "hello")
+
+  assert.equal(extractContent("garbage", null), "")
+  assert.equal(extractContent('{"choices":[]}', "application/json"), "")
+})
+
+test("imageToDataUrl encodes local file with mime from extension", () => {
+  const png = join(FAKE_HOME, "tiny.png")
+  writeFileSync(png, Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+  const url = imageToDataUrl(png)
+  assert.match(url, /^data:image\/png;base64,/)
+  assert.equal(Buffer.from(url.split(",")[1], "base64").length, 4)
+
+  const jpg = join(FAKE_HOME, "tiny.JPG")
+  writeFileSync(jpg, Buffer.from([0xff, 0xd8]))
+  assert.match(imageToDataUrl(jpg), /^data:image\/jpeg;base64,/, "extension match is case-insensitive")
+})
+
+test("codearts_vision tool is registered by default and disabled via visionTool:false", async () => {
+  const mod = await import("../dist/index.js?vision-tool")
+  const hooks = await mod.default.server({}, {})
+  assert.ok(hooks.tool, "tool hook present by default")
+  const def = hooks.tool["codearts_vision"]
+  assert.ok(def, "codearts_vision registered")
+  assert.equal(typeof def.execute, "function")
+  assert.ok(def.args.image, "image arg")
+  assert.ok(def.args.image_url, "image_url arg")
+  assert.ok(def.args.prompt, "prompt arg")
+
+  const off = await mod.default.server({}, { visionTool: false })
+  assert.equal(off.tool, undefined, "visionTool:false removes the tool hook")
+})
+
+test("codearts_vision executes against the gateway and returns text", async (t) => {
+  const realFetch = globalThis.fetch
+  let captured = null
+  globalThis.fetch = async (input, init) => {
+    captured = { url: String(input), init }
+    return new Response(
+      'data: {"choices":[{"delta":{"content":"A small red circle."}}]}\n\ndata: [DONE]\n',
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    )
+  }
+  t.after(() => {
+    globalThis.fetch = realFetch
+  })
+
+  const png = join(FAKE_HOME, "shot.png")
+  writeFileSync(png, Buffer.from([1, 2, 3, 4]))
+
+  const mod = await import("../dist/index.js?vision-exec")
+  const hooks = await mod.default.server({}, { ak: "TESTAK", sk: "TESTSK", baseURL: "https://example.com" })
+  const res = await hooks.tool["codearts_vision"].execute(
+    { image: png, prompt: "What is this?" },
+    { directory: FAKE_HOME, abort: undefined },
+  )
+
+  assert.equal(captured.url, "https://example.com/api/v2/chat/completions")
+  const h = captured.init.headers
+  assert.equal(h["model-id"], "Qwen3-VL-235B", "default vision model")
+  assert.equal(h["User-Agent"], "ai-sdk/provider-utils/4.0.21 runtime/bun/1.3.14", "CLI shape")
+  assert.match(h.Authorization, /^SDK-HMAC-SHA256 Access=TESTAK/)
+
+  const body = JSON.parse(captured.init.body)
+  assert.equal(body.model, "Qwen3-VL-235B")
+  assert.equal(body.user_prompt, "What is this?")
+  assert.equal(body.messages[0].content[0].type, "text")
+  assert.equal(body.messages[0].content[0].text, "What is this?")
+  assert.match(body.messages[0].content[1].image_url.url, /^data:image\/png;base64,/)
+  assert.equal(res.output, "A small red circle.")
+  assert.match(res.title, /Qwen3-VL-235B/)
+})
+
+test("codearts_vision honours a custom visionModel", async (t) => {
+  const realFetch = globalThis.fetch
+  let captured = null
+  globalThis.fetch = async (input, init) => {
+    captured = { init }
+    return new Response('data: {"choices":[{"delta":{"content":"ok"}}]}', { status: 200 })
+  }
+  t.after(() => {
+    globalThis.fetch = realFetch
+  })
+
+  const mod = await import("../dist/index.js?vision-model")
+  const hooks = await mod.default.server({}, { ak: "TESTAK", sk: "TESTSK", visionModel: "Qwen3.6-27B-VL" })
+  await hooks.tool["codearts_vision"].execute(
+    { image_url: "data:image/png;base64,AAAA", prompt: "hi" },
+    { directory: FAKE_HOME, abort: undefined },
+  )
+  assert.equal(captured.init.headers["model-id"], "Qwen3.6-27B-VL")
+  assert.equal(JSON.parse(captured.init.body).model, "Qwen3.6-27B-VL")
+})
+
+test("codearts_vision errors clearly without image / without credentials", async () => {
+  const mod = await import("../dist/index.js?vision-errors")
+  const ctx = { directory: FAKE_HOME, abort: undefined }
+
+  const withCreds = await mod.default.server({}, { ak: "TESTAK", sk: "TESTSK" })
+  await assert.rejects(
+    () => withCreds.tool["codearts_vision"].execute({ prompt: "hi" }, ctx),
+    /image|image_url/i,
+    "missing image argument rejected",
+  )
+
+  const noCreds = await mod.default.server({}, {})
+  await assert.rejects(
+    () => noCreds.tool["codearts_vision"].execute({ image_url: "data:image/png;base64,AA" }, ctx),
+    /connect|AK\/SK/i,
+    "no credentials rejected with connect hint",
+  )
+})
+
+test("codearts_vision reports gateway errors", async (t) => {
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async () =>
+    new Response('{"error":"InferHub.002002009 not registered"}', { status: 400 })
+  t.after(() => {
+    globalThis.fetch = realFetch
+  })
+
+  const mod = await import("../dist/index.js?vision-http-error")
+  const hooks = await mod.default.server({}, { ak: "TESTAK", sk: "TESTSK" })
+  await assert.rejects(
+    () => hooks.tool["codearts_vision"].execute({ image_url: "data:image/png;base64,AA" }, { directory: FAKE_HOME, abort: undefined }),
+    /HTTP 400.*not registered/s,
+  )
 })
 
 process.on("unhandledRejection", (e) => {
