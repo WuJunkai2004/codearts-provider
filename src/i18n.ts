@@ -10,6 +10,18 @@ export interface Translations {
   akPrompt: string;
   /** /connect custom prompt placeholder (step 1). */
   akPlaceholder: string;
+  /** codearts_vision tool description. */
+  visionToolDescription: string;
+  /** Error returned when the vision tool runs without credentials. */
+  visionNoCreds: string;
+  /** Error returned when neither image nor image_url was provided. */
+  visionNoImage: string;
+  /** Error returned when the vision model returns an empty answer. */
+  visionEmpty: string;
+  /** Prefix of the vision tool result title. */
+  visionTitle: string;
+  /** Default prompt when the caller supplies none. */
+  visionDefaultPrompt: string;
 }
 
 const ZH_T: Translations = {
@@ -17,6 +29,16 @@ const ZH_T: Translations = {
   skTitle: "华为云 CodeArts 密钥（SK，第 2/2 步）",
   akPrompt: "华为云 CodeArts 访问密钥（AK，第 1/2 步）",
   akPlaceholder: "Access Key Id",
+  visionToolDescription:
+    "使用 CodeArts 的视觉模型分析一张图片并返回文字描述或回答。当用户提供图片、截图、报错截图、图表、设计稿，而当前模型无法直接看图时使用。支持本地文件路径或图片 URL。",
+  visionNoCreds:
+    "CodeArts 未连接。请先使用 /connect 添加 AK/SK，或设置 CODEARTS_CLI_AK/SK 环境变量。",
+  visionNoImage:
+    "必须提供 image（本地路径）或 image_url（远程/Data URL）之一。",
+  visionEmpty: "视觉模型未返回任何内容。",
+  visionTitle: "视觉分析",
+  visionDefaultPrompt:
+    "请详细描述这张图片的内容。如果图中包含文字、代码、报错信息或数据，请原样列出。",
 };
 
 const EN_T: Translations = {
@@ -24,6 +46,16 @@ const EN_T: Translations = {
   skTitle: "Huawei CodeArts Secret Key (SK, step 2/2)",
   akPrompt: "Huawei CodeArts Access Key (AK, step 1/2)",
   akPlaceholder: "Access Key Id",
+  visionToolDescription:
+    "Analyze an image with CodeArts' vision model and return a text description or answer. Use when the user supplies an image, screenshot, error screenshot, chart, or design mockup that the current model cannot see. Accepts a local file path or an image URL.",
+  visionNoCreds:
+    "CodeArts is not connected. Run /connect to add AK/SK, or set the CODEARTS_CLI_AK/SK environment variables.",
+  visionNoImage:
+    "Provide either image (local path) or image_url (remote/Data URL).",
+  visionEmpty: "The vision model returned no content.",
+  visionTitle: "Vision",
+  visionDefaultPrompt:
+    "Describe this image in detail. If it contains text, code, error messages, or data, reproduce them verbatim.",
 };
 
 export function getTranslations(langZH: boolean): Translations {
