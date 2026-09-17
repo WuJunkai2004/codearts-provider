@@ -11,7 +11,7 @@ OpenCode 插件：将华为云 CodeArts（snap-access InferHub）模型接入 op
 - 推理端点：`POST {base}/api/v2/chat/completions`（OpenAI 兼容，`@ai-sdk/openai-compatible`）
 - 通过插件 `config` / `auth` hook 注入 `options.fetch` 签名函数：每个请求（含流式）都会计算 body SHA256 并替换 Authorization 头
 - **chat 请求自动补全 CLI 请求形态**（网关按请求形态路由，详见[网关路由规则](#网关路由规则gateway-routing)）：完整 CLI 头集（`x-ot-*`、`user-session-id`、`model-id` 等）+ CLI User-Agent + body 补 `stream` / `tool_stream` / `user_prompt` 字段
-- 3 个 hook：`config`（启动注册 provider + 注入签名 fetch）、`provider`（动态模型刷新）、`auth`（/connect 凭据流）
+- 4 个 hook：`config`（启动注册 provider + 注入签名 fetch）、`provider`（动态模型刷新）、`auth`（/connect 凭据流）、`tool`（`codearts_vision`）
 - **`codearts_vision` 工具**：主模型没有视觉能力时，把图片交给固定的视觉模型（默认 `Qwen3-VL-235B`）转成文字。详见[视觉工具](#视觉工具codearts_vision)
 
 ## 安装
@@ -65,7 +65,7 @@ opencode run -m codearts/openpangu-2.0-pro "hello"
 opencode run -m codearts/GLM-5.2 "hello"
 ```
 
-主模型无法看图时，直接在对话里给出图片路径即可，模型会自行调用 `codearts_vision`：
+主模型无法看图时，直接在对话里给出图片路径，模型会自行调用 `codearts_vision`：
 
 ```
 这张截图报什么错？test/fixtures/error.png
@@ -85,10 +85,10 @@ opencode run -m codearts/GLM-5.2 "hello"
 
 ## 视觉工具（`codearts_vision`）
 
-主模型（GLM-5.2 / OpenPangu 等）没有视觉能力，用户在对话里贴图无法被理解。插件因此注册一个 LLM 工具 `codearts_vision`：内部把图片交给固定的视觉模型（默认 `Qwen3-VL-235B`，路由别名）转成文字，再把文字交给主模型。
+主模型（GLM-5.2 / OpenPangu 等）没有视觉能力。插件注册一个 LLM 工具 `codearts_vision`：内部把图片交给固定的视觉模型（默认 `Qwen3-VL-235B`，路由别名）转成文字，再把文字交给主模型。
 
 - **注册时机**：`visionTool` 选项不为 `false` 时始终注册（默认开启）。**凭据在执行时惰性解析**——`config` hook 首次启动时可能读不到 `/connect` 刚写的凭据，若在注册期判断会导致工具永久缺失。无凭据时调用会返回明确错误（提示 `/connect`），而不是静默失败。
-- **参数**：`image`（本地路径，相对路径按会话项目目录解析）/ `image_url`（远程 URL 或 `data:` URL）二选一；`prompt` 可选，缺省为"详细描述这张图片"。
+- **参数**（三选一）：`image`（本地路径，相对路径按会话项目目录解析）/ `image_url`（远程 URL 或 `data:` URL）；`prompt` 可选，缺省为"详细描述这张图片"。
 - **独立会话槽位**：服务端按 `user-session-id` 计数、上限 3 并发。视觉子调用使用独立的 `createSignedFetch` 实例（自己的 sessionId），不与主对话抢槽位。
 - **请求形态**：与 chat 完全相同（CLI 头集 + `stream` / `tool_stream` / `user_prompt`），复用 `createSignedFetch`，因此网关能正确路由。
 
@@ -99,6 +99,18 @@ opencode run -m codearts/GLM-5.2 "hello"
 ```
 
 > 用 `/connect` 添加凭据后需**重启 opencode**，工具才会随进程重新注册（同 `opencode.json` 改动）。
+
+### 局限：贴图无法交给工具
+
+**直接在对话框粘贴/拖拽图片不支持。** 这类图片以 `FilePart` 传给模型，主模型读不了，而工具调用也拿不到字节——模型只能看到附件，无法把图片内容转交给 `codearts_vision`。
+
+曾尝试用 `chat.message` hook 拦截（把图片字节存入注册表、把 part 换成一个 `synthetic: true` 的隐藏提示，让模型带句柄调工具），**已移除**：实测模型会无视注入的句柄，转而把附件的**文件名**当参数传进来，导致查表必然失败。相关代码（`src/attachments.ts`）已删除。
+
+目前可行的用法是**提供图片路径或 URL**：
+
+```
+这张截图报什么错？C:\Users\me\Pictures\error.png
+```
 
 ## 模型清单（2026-09 实测）
 
@@ -147,7 +159,7 @@ snap-access 网关**按请求形态路由**，chat 请求缺任何一项都会�
 ## 测试
 
 ```
-npm test        # node --test，32 个用例（签名向量、CLI 形态路由、mock 发现、模型缓存、i18n、/connect 两步流、视觉工具）
+npm test        # node --test，32 个用例（签名向量、CLI 形态路由、mock 发现、模型缓存、/connect 两步流、视觉工具）
 ```
 
 ## 请求构建算法（Python 参考实现）

@@ -229,10 +229,15 @@ const server: Plugin = async (_input, pluginOptions = {}) => {
     execute: async (args, context) => {
       const creds = resolveCreds({}, pluginOptions);
       if (!creds) throw new Error(t.visionNoCreds);
-      if (!args.image && !args.image_url) throw new Error(t.visionNoImage);
-      const dataUrl = args.image
-        ? imageToDataUrl(resolvePath(context.directory, args.image))
-        : (args.image_url as string);
+
+      let dataUrl: string;
+      if (args.image) {
+        dataUrl = imageToDataUrl(resolvePath(context.directory, args.image));
+      } else if (args.image_url) {
+        dataUrl = args.image_url;
+      } else {
+        throw new Error(t.visionNoImage);
+      }
       const out = await describeImage({
         ak: creds.ak,
         sk: creds.sk,
@@ -246,7 +251,10 @@ const server: Plugin = async (_input, pluginOptions = {}) => {
       return {
         title: `${t.visionTitle} · ${visionModel}`,
         output: out,
-        metadata: { model: visionModel, image: args.image ?? args.image_url },
+        metadata: {
+          model: visionModel,
+          image: args.image ?? args.image_url,
+        },
       };
     },
   });

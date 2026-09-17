@@ -8,7 +8,7 @@ OpenCode provider plugin for Huawei Cloud CodeArts (snap-access InferHub), signe
 npm install
 npm run build        # tsc -> dist/ (REQUIRED before test or plugin use)
 npm run typecheck    # tsc --noEmit
-npm test             # node --test "test/*.test.js" (32 unit tests, no network)
+npm test             # node --test "test/*.test.js" (39 unit tests, no network)
 ```
 
 - **`npm test` requires `npm run build` first**: tests import from `../dist/*.js`, not `src/`. After editing `src/`, always rebuild before re-running tests or typecheck will pass while tests run stale code.
@@ -37,6 +37,7 @@ npm test             # node --test "test/*.test.js" (32 unit tests, no network)
 - **Chat requests must mimic the CLI's exact request shape** (User-Agent `ai-sdk/provider-utils/4.0.21 runtime/bun/1.3.14`, full `x-ot-*` header set, body fields `stream: true` / `tool_stream` / `user_prompt`). The gateway routes by request shape; any missing piece lands on the wrong backend (Whitelabel 404 / not registered). Discovery endpoints do NOT need this shape.
 - `user-session-id` is per-`createSignedFetch`-instance and counts against a 3-concurrent-session server limit; keep it stable per process. The vision tool isolates itself with an explicit `sessionId` (third arg of `createSignedFetch`) so a sub-call never shares the main chat's slot.
 - **`hooks.tool` is static** (evaluated in `server()`, not populated by the `config` hook), so the vision tool cannot be gated on credentials at registration time — `/connect` credentials are not visible on first boot. It resolves credentials lazily at `execute` time and returns a `/connect` hint instead. `visionTool: false` removes the hook entirely.
+- **Pasted images cannot be handled by the vision tool.** They arrive as `FilePart`s with `data:`/`file:` URLs; the main model cannot read them and the tool call never receives the bytes. A `chat.message` interception (stashing bytes under a handle, swapping the part for a `synthetic: true` hint) was tried and **removed**: the model ignored the injected handle and passed the attachment's filename instead, so the lookup always missed. The tool only supports an explicit `image` path or `image_url`.
 
 ## Credential priority
 
