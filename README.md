@@ -6,11 +6,13 @@ OpenCode 插件：将华为云 CodeArts（snap-access InferHub）模型接入 op
 
 - 复刻 CodeArts CLI（agentkernel）的请求签名：华为云 APIG `SDK-HMAC-SHA256`
 - 动态模型发现：`/v1/agent-center/agents/useragents` → `/v1/agent-center/agents/detail`（与官方 CLI 相同的链路，`Agent-Type: AgentCenter` 头 + AK/SK 签名）
+- **模型清单文件缓存**：发现结果写入 `~/.local/share/opencode/codearts-models.json`；发现失败时回退到缓存（内存 → 文件），不再有硬编码兜底模型。详见[模型缓存](#模型缓存)
 - **模型 ID = `model_alias`（小写路由别名），显示名 = `model_name`**。例如显示名 `OpenPangu-2.0-Pro` 的路由 ID 是 `openpangu-2.0-pro`，直接用 `model_name` 请求会报 `InferHub.002002009 not registered`（GLM-5.2 恰好别名=名字，因此曾误判为"只有 GLM 能用"）
 - 推理端点：`POST {base}/api/v2/chat/completions`（OpenAI 兼容，`@ai-sdk/openai-compatible`）
 - 通过插件 `config` / `auth` hook 注入 `options.fetch` 签名函数：每个请求（含流式）都会计算 body SHA256 并替换 Authorization 头
 - **chat 请求自动补全 CLI 请求形态**（网关按请求形态路由，详见[网关路由规则](#网关路由规则gateway-routing)）：完整 CLI 头集（`x-ot-*`、`user-session-id`、`model-id` 等）+ CLI User-Agent + body 补 `stream` / `tool_stream` / `user_prompt` 字段
 - 3 个 hook：`config`（启动注册 provider + 注入签名 fetch）、`provider`（动态模型刷新）、`auth`（/connect 凭据流）
+- **`codearts_vision` 工具**：主模型没有视觉能力时，把图片交给固定的视觉模型（默认 `Qwen3-VL-235B`）转成文字。详见[视觉工具](#视觉工具codearts_vision)
 
 ## 安装
 
@@ -63,6 +65,41 @@ opencode run -m codearts/openpangu-2.0-pro "hello"
 opencode run -m codearts/GLM-5.2 "hello"
 ```
 
+主模型无法看图时，直接在对话里给出图片路径即可，模型会自行调用 `codearts_vision`：
+
+```
+这张截图报什么错？test/fixtures/error.png
+```
+
+## 模型缓存
+
+模型发现每次 `config` / `provider` hook 都要跑两次网络请求，因此插件把结果缓存到文件：
+
+- **位置**：`~/.local/share/opencode/codearts-models.json`（与 `auth.json` 同目录）
+- **结构**：`{ base, fetchedAt, models }`；按 `base` 匹配，换 base URL 自动失效
+- **回退链**：发现成功 → 写缓存；发现失败或返回空 → 内存缓存 → 文件缓存 → `null`（走 `connect-required` 提示模型）
+- **不再有硬编码模型**：`EXTRA_MODELS`（`src/index.ts`）和 `discover.ts` 的 `FALLBACK_MODELS` 均已删除。现在没有"账号未注册但硬编码在列表里"的模型，模型清单完全来自 agent-center 或缓存
+- 缓存是 best-effort：写失败（如 HOME 只读）只影响回退能力，不影响插件运行
+
+> 缓存**不按 `fetchedAt` 过期**：模型清单变化很少，且每次 hook 都会尝试重新发现，失败时才用缓存。删掉该文件即可强制重新发现。
+
+## 视觉工具（`codearts_vision`）
+
+主模型（GLM-5.2 / OpenPangu 等）没有视觉能力，用户在对话里贴图无法被理解。插件因此注册一个 LLM 工具 `codearts_vision`：内部把图片交给固定的视觉模型（默认 `Qwen3-VL-235B`，路由别名）转成文字，再把文字交给主模型。
+
+- **注册时机**：`visionTool` 选项不为 `false` 时始终注册（默认开启）。**凭据在执行时惰性解析**——`config` hook 首次启动时可能读不到 `/connect` 刚写的凭据，若在注册期判断会导致工具永久缺失。无凭据时调用会返回明确错误（提示 `/connect`），而不是静默失败。
+- **参数**：`image`（本地路径，相对路径按会话项目目录解析）/ `image_url`（远程 URL 或 `data:` URL）二选一；`prompt` 可选，缺省为"详细描述这张图片"。
+- **独立会话槽位**：服务端按 `user-session-id` 计数、上限 3 并发。视觉子调用使用独立的 `createSignedFetch` 实例（自己的 sessionId），不与主对话抢槽位。
+- **请求形态**：与 chat 完全相同（CLI 头集 + `stream` / `tool_stream` / `user_prompt`），复用 `createSignedFetch`，因此网关能正确路由。
+
+```jsonc
+// 关闭工具 / 换模型
+"plugin": [["file:///D:/code/huaweicode/codearts-provider", { "visionTool": false }]]
+"plugin": [["file:///D:/code/huaweicode/codearts-provider", { "visionModel": "Qwen3-VL-235B" }]]
+```
+
+> 用 `/connect` 添加凭据后需**重启 opencode**，工具才会随进程重新注册（同 `opencode.json` 改动）。
+
 ## 模型清单（2026-09 实测）
 
 | 模型 ID（= model_alias） | 显示名（model_name） | 来源 | 文本 | 图片 |
@@ -71,9 +108,11 @@ opencode run -m codearts/GLM-5.2 "hello"
 | `openpangu-2.0-flash` | OpenPangu-2.0-Flash | agent-center 下发 | ✅ | ❌ |
 | `GLM-5.2` | GLM-5.2 | agent-center 下发 | ✅ | ❌（实测 406） |
 | `glm-5.2-sft-harmony` | GLM-5.2-ArkTS-SPARK | agent-center 下发 | ✅ | ❌ |
-| `Qwen3-VL-235B` | Qwen3-VL-235B | EXTRA_MODELS 硬编码 | ✅ | ✅ |
+| `Qwen3-VL-235B` | Qwen3-VL-235B | agent-center 下发 | ✅ | ✅ |
 
-以下模型网关可路由但**该账号未注册**（`InferHub.002002009 not registered`），已从插件剔除：`Qwen3.6-27B-VL`、`Qwen3.5-397B-A17B-VL`、`Qwen3-Coder-30B-A3B-Instruct`、`ClaudeV1`。用 `model_name`（显示名）请求 Pangu/ArkTS 同样报 not registered——必须用别名。
+模型清单**完全来自 agent-center 下发**（失败时用[文件缓存](#模型缓存)），插件不再硬编码任何模型。
+
+以下模型网关可路由但**该账号未注册**（`InferHub.002002009 not registered`），因此不在下发清单中：`Qwen3.6-27B-VL`、`Qwen3.5-397B-A17B-VL`、`Qwen3-Coder-30B-A3B-Instruct`、`ClaudeV1`。用 `model_name`（显示名）请求 Pangu/ArkTS 同样报 not registered——必须用别名。
 
 ## 网关路由规则（gateway routing）
 
@@ -100,13 +139,15 @@ snap-access 网关**按请求形态路由**，chat 请求缺任何一项都会�
 |---|---|---|
 | `baseURL` | `https://snap-access.cn-north-4.myhuaweicloud.com` | 服务 base URL |
 | `ak` / `sk` | 环境变量 `CODEARTS_CLI_AK/SK` | 凭证（完整优先级链见[凭证](#凭证)） |
+| `visionTool` | `true` | 是否注册 `codearts_vision` 工具 |
+| `visionModel` | `Qwen3-VL-235B` | 视觉工具使用的模型路由别名 |
 
 界面语言按 `CODEARTS_LANG` > `LC_ALL` > `LANG` 检测中文/英文（提示文案双语）。
 
 ## 测试
 
 ```
-npm test        # node --test，20 个用例（签名向量、CLI 形态路由、mock 发现、i18n、/connect 两步流）
+npm test        # node --test，32 个用例（签名向量、CLI 形态路由、mock 发现、模型缓存、i18n、/connect 两步流、视觉工具）
 ```
 
 ## 请求构建算法（Python 参考实现）
@@ -328,12 +369,14 @@ chat("Qwen3-VL-235B", [{"role": "user", "content": [
 ## 文件结构
 
 ```
-src/index.ts       # 插件入口：V1 形态 default export { id, server }（config/provider/auth 三 hook）
+src/index.ts       # 插件入口：V1 形态 default export { id, server }（config/provider/auth/tool 四 hook）
 src/signer.ts      # SDK-HMAC-SHA256 签名 + 签名 fetch（chat 请求 CLI 形态注入）
 src/discover.ts    # agent-center 模型发现（model_alias → id，model_name → name）
-src/i18n.ts        # 中英文案（提示模型名、/connect 两步流文案）
+src/cache.ts       # 模型清单文件缓存（~/.local/share/opencode/codearts-models.json）
+src/vision.ts      # codearts_vision 工具后端（图片 → 视觉模型 → 文字）
+src/i18n.ts        # 中英文案（提示模型名、/connect 两步流、视觉工具文案）
 dist/              # tsc 构建产物（exports["./server"] 指向 dist/index.js）
-test/plugin.test.js   # 20 个单测
+test/plugin.test.js   # 32 个单测
 test/live-check.js    # 真实 API 冒烟测试（需环境变量）
 ```
 
