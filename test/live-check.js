@@ -1,4 +1,4 @@
-import { signRequest } from "../dist/utils/signer.js";
+import { signRequest } from "../.tsc/utils/signer.js";
 
 const AK = process.env.CODEARTS_CLI_AK;
 const SK = process.env.CODEARTS_CLI_SK;

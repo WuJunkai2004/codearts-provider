@@ -3,7 +3,6 @@
   "version": "0.1.0",
   "description": "OpenCode provider plugin for Huawei Cloud CodeArts (snap-access InferHub API, SDK-HMAC-SHA256 signed)",
   "type": "module",
-  "types": "dist/index.d.ts",
   "exports": {
     "./server": {
       "import": "./dist/index.js"
@@ -21,8 +20,9 @@
   ],
   "license": "MIT",
   "scripts": {
-    "build": "tsc && node build.mjs",
+    "build": "tsc --noEmit && node build.mjs",
     "typecheck": "tsc --noEmit",
+    "pretest": "tsc && node build.mjs",
     "test": "node --test \"test/*.test.js\""
   },
   "devDependencies": {

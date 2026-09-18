@@ -404,7 +404,8 @@ src/utils/cache.ts  # 模型清单文件缓存（~/.local/share/opencode/codeart
 src/utils/credentials.ts # AK/SK 解析（options > env > /connect connection > auth.json）
 src/utils/vision.ts # codearts_vision 工具后端（图片 → 视觉模型 → 文字）
 src/utils/i18n.ts   # 中英文案（提示模型名、/connect 两步流、视觉工具文案）
-dist/              # 构建产物（esbuild 打包的 dist/index.js 即 exports["./server"]，含 tsc 散件供测试）
+dist/              # 发布产物：仅含 esbuild 单文件 bundle（dist/index.js 即 exports["./server"]）
+.tsc/              # tsc 散件输出，仅供测试（gitignore，不入 npm 包）
 test/plugin.test.js   # 单测（V1 hook + V2 setup + 签名/缓存/视觉）
 test/live-check.js    # 真实 API 冒烟测试（需环境变量）
 ```
@@ -413,7 +414,7 @@ test/live-check.js    # 真实 API 冒烟测试（需环境变量）
 
 ```
 npm install
-npm run build      # tsc -> dist
+npm run build      # tsc --noEmit + esbuild -> dist/index.js（单文件）
 npm run typecheck
-npm test
+npm test           # pretest 自动产出 .tsc/ 散件并重建 bundle
 ```

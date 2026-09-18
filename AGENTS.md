@@ -6,12 +6,12 @@ OpenCode provider plugin for Huawei Cloud CodeArts (snap-access InferHub), signe
 
 ```bash
 npm install
-npm run build        # tsc -> dist/*.js, then esbuild re-bundles dist/index.js (REQUIRED before test or plugin use)
+npm run build        # tsc --noEmit + esbuild -> dist/index.js (the ONLY dist file; REQUIRED before plugin use)
 npm run typecheck    # tsc --noEmit
-npm test             # node --test "test/*.test.js" (unit tests, no network)
+npm test             # node --test "test/*.test.js" (pretest emits .tsc/ and rebuilds the bundle)
 ```
 
-- **`npm test` requires `npm run build` first**: tests import from `../dist/*.js`, not `src/`. After editing `src/`, always rebuild before re-running tests or typecheck will pass while tests run stale code.
+- Tests import scattered modules from `../.tsc/*` (tsc emit, gitignored) and the real published artifact from `../dist/index.js` (esbuild bundle). `pretest` runs both builds, so `npm test` is self-sufficient; a bare `node --test` needs `npm run build` first.
 - `test/live-check.js` is a real-API smoke test, NOT run by `npm test` (glob only matches `*.test.js`). It needs `CODEARTS_CLI_AK`/`CODEARTS_CLI_SK` env vars and a fresh build: `node test/live-check.js`.
 - Run a single test: `node --test --test-name-pattern "<pattern>" test/plugin.test.js`.
 - On Windows Git Bash, use `npm.cmd` if bare `npm` is not found.
@@ -31,7 +31,7 @@ npm test             # node --test "test/*.test.js" (unit tests, no network)
 - `src/utils/models.ts` — there are **no hardcoded models** (`EXTRA_MODELS` and `FALLBACK_MODELS` are gone). `fetchModels()` writes the cache on success and falls back on failure: in-memory `lastGoodModels` → file cache → `null`, where `null` makes the caller emit the `connect-required` hint model. `resolveBase()` (`src/utils/credentials.ts`) strips a trailing `/api/v2`, so `baseURL` may be passed with or without it.
 - `src/utils/i18n.ts` — zh/en strings, language from `CODEARTS_LANG` > `LC_ALL` > `LANG`.
 - `src/utils/constants.ts` + `src/utils/credentials.ts` + `src/utils/paths.ts` — provider/tool ids, AK/SK credential resolution and `/connect` storage parsing, image-path resolution.
-- `dist/index.js` is the loaded artifact AND the only published file: opencode reads `exports["./server"]` → `dist/index.js`, a self-contained esbuild bundle (`tool()` + zod inlined — V1 needs them at runtime; type-only imports erased). Zero `dependencies`/`peerDependencies`: the host's plugin cache installs exactly one package. The other `dist/*.js` modules exist for the tests (`tsc` emit) and are not published. `src/` is never imported at runtime.
+- `dist/` holds ONLY the single-file esbuild bundle `dist/index.js` — the loaded artifact and the only published file (`npm pack` = 3 files: this, README, package.json; zero declared deps). `tool()` + zod are inlined because V1 needs them at runtime; type-only imports are erased. tsc emits to `.tsc/` (gitignored, never published) purely for the tests. `src/` is never imported at runtime.
 
 ## Critical protocol quirks (easy to break, hard to debug)
 
