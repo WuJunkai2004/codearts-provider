@@ -9,7 +9,14 @@ OpenCode 插件：将华为云 CodeArts（snap-access InferHub）模型接入 op
 - **模型清单文件缓存**：发现结果写入 `~/.local/share/opencode/codearts-models.json`；发现失败时回退到缓存（内存 → 文件），不再有硬编码兜底模型。详见[模型缓存](#模型缓存)
 - **模型 ID = `model_alias`（小写路由别名），显示名 = `model_name`**。例如显示名 `OpenPangu-2.0-Pro` 的路由 ID 是 `openpangu-2.0-pro`，直接用 `model_name` 请求会报 `InferHub.002002009 not registered`（GLM-5.2 恰好别名=名字，因此曾误判为"只有 GLM 能用"）
 - 推理端点：`POST {base}/api/v2/chat/completions`（OpenAI 兼容，`@ai-sdk/openai-compatible`）
-- 通过插件 `config` / `auth` hook 注入 `options.fetch` 签名函数：每个请求（含流式）都会计算 body SHA256 并替换 Authorization 头
+- 通过插件 `config` / `auth` hook 注入 `options.fetch` 签名函数：每个请求（含流式）都会计算 body SHA256 并替换 Authorization 头（**V1 方式**；V2 见下条）
+- **V2（opencode 2.x）双形态入口**：同一份产物 default export `{ id, server, setup }`——V1 宿主调用 `server()`（四 hook），V2 宿主调用 `setup(ctx)`：
+  - `config` hook → `ctx.provider.transform`（`editor.add({ info, models })`，模型为 V2 `Model.Info` 形状：`modelID`/`capabilities.input[]`/`cost[]`/`enabled` 等）
+  - `options.fetch` 注入 → `ctx.session.hook("http.request", …, { providerID: "codearts" })`：对原生 `Request` 原地整形 + 签名（`signNativeRequest`），`user-session-id` 直接用宿主真实 session ID（会话计数跟随会话而非进程）
+  - **V2 的 provider `settings` 必须是纯 JSON**：注册表会对定义做 structuredClone，塞函数（如 fetch）会让整个 transform 抛 `DataCloneError`、插件被禁用——这是 V2 适配曾"看不到模型"的根因
+  - `auth` hook → `ctx.integration.transform`（key 方法 + AK 表单字段）；请求期凭据经 `ctx.integration.connection.active/resolve` 惰性解析
+  - `tool` map → `ctx.tool.transform`（JSON Schema 入参、`{ content }` 结果；工具目录取 `ctx.location.directory`）
+  - 启动后发现 + 60s 轮询刷新，清单变化时 `ctx.provider.reload()`
 - **chat 请求自动补全 CLI 请求形态**（网关按请求形态路由，详见[网关路由规则](#网关路由规则gateway-routing)）：完整 CLI 头集（`x-ot-*`、`user-session-id`、`model-id` 等）+ CLI User-Agent + body 补 `stream` / `tool_stream` / `user_prompt` 字段
 - 4 个 hook：`config`（启动注册 provider + 注入签名 fetch）、`provider`（动态模型刷新）、`auth`（/connect 凭据流）、`tool`（`codearts_vision`）
 - **`codearts_vision` 工具**：主模型没有视觉能力时，把图片交给固定的视觉模型（默认 `Qwen3-VL-235B`）转成文字。详见[视觉工具](#视觉工具codearts_vision)
@@ -26,19 +33,25 @@ npm run build        # 生成 dist/（opencode 加载的就是 dist/index.js）
 ```
 
 ```jsonc
+// V2（opencode 2.x）：键名是 plugins，对象形式可带 options
+{
+  "plugins": [{ "package": "file:///.../codearts-provider/dist" }]
+}
+
+// V1（opencode 1.x）：键名是 plugin
 {
   "plugin": ["file:///.../codearts-provider"]
 }
 ```
 
-opencode 会读取包的 `exports["./server"]`（`dist/index.js`），无需发布 npm。
+opencode 会读取包的 `exports["./server"]`（`dist/index.js`），无需发布 npm。V2 下目录形态的插件按 `server.*` → `index.*` 顺序解析入口；**CLI/TUI 专用插件才放 `cli.json` 且解析 `tui.*` 入口——server 插件放 `cli.json` 不会被服务器加载**。
 
 ### 方式二：发布为 npm 包后
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-codearts-provider"]
+  "plugins": ["opencode-codearts-provider"]
 }
 ```
 
@@ -381,14 +394,18 @@ chat("Qwen3-VL-235B", [{"role": "user", "content": [
 ## 文件结构
 
 ```
-src/index.ts       # 插件入口：V1 形态 default export { id, server }（config/provider/auth/tool 四 hook）
-src/signer.ts      # SDK-HMAC-SHA256 签名 + 签名 fetch（chat 请求 CLI 形态注入）
-src/discover.ts    # agent-center 模型发现（model_alias → id，model_name → name）
-src/cache.ts       # 模型清单文件缓存（~/.local/share/opencode/codearts-models.json）
-src/vision.ts      # codearts_vision 工具后端（图片 → 视觉模型 → 文字）
-src/i18n.ts        # 中英文案（提示模型名、/connect 两步流、视觉工具文案）
-dist/              # tsc 构建产物（exports["./server"] 指向 dist/index.js）
-test/plugin.test.js   # 32 个单测
+src/index.ts       # 插件入口：双形态 default export { id, server, setup }（V1 四 hook + V2 setup(ctx)）
+src/v1/index.ts    # V1 实现：config/provider/auth/tool 四 hook，options.fetch 注入签名
+src/v2/index.ts    # V2 实现：provider/integration/tool transform + session http.request 签名钩子
+src/utils/signer.ts # SDK-HMAC-SHA256 签名：createSignedFetch（V1 fetch 注入）+ signNativeRequest（V2 Request 改写）
+src/utils/models.ts # 发现结果 → V1 ConfigModel/Model + V2 Model.Info（toModelInfo/hintModelInfo）
+src/utils/discover.ts # agent-center 模型发现（model_alias → id，model_name → name）
+src/utils/cache.ts  # 模型清单文件缓存（~/.local/share/opencode/codearts-models.json）
+src/utils/credentials.ts # AK/SK 解析（options > env > /connect connection > auth.json）
+src/utils/vision.ts # codearts_vision 工具后端（图片 → 视觉模型 → 文字）
+src/utils/i18n.ts   # 中英文案（提示模型名、/connect 两步流、视觉工具文案）
+dist/              # 构建产物（esbuild 打包的 dist/index.js 即 exports["./server"]，含 tsc 散件供测试）
+test/plugin.test.js   # 单测（V1 hook + V2 setup + 签名/缓存/视觉）
 test/live-check.js    # 真实 API 冒烟测试（需环境变量）
 ```
 

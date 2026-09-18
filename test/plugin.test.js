@@ -1,9 +1,10 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { signRequest, sdkDate, createSignedFetch } from "../dist/signer.js"
-import { discoverModels, pickAgentId } from "../dist/discover.js"
-import { extractContent, imageToDataUrl } from "../dist/vision.js"
-import { readModelCache, writeModelCache } from "../dist/cache.js"
+import { signRequest, sdkDate, createSignedFetch, signNativeRequest } from "../dist/utils/signer.js"
+import { discoverModels, pickAgentId } from "../dist/utils/discover.js"
+import { extractContent, imageToDataUrl } from "../dist/utils/vision.js"
+import { readModelCache, writeModelCache } from "../dist/utils/cache.js"
+import { toModelInfo } from "../dist/utils/models.js"
 import { mkdirSync, writeFileSync } from "node:fs"
 
 const AK = "TESTAK"
@@ -645,6 +646,264 @@ test("codearts_vision reports gateway errors", async (t) => {
     () => hooks.tool["codearts_vision"].execute({ image_url: "data:image/png;base64,AA" }, { directory: FAKE_HOME, abort: undefined }),
     /HTTP 400.*not registered/s,
   )
+})
+
+test("V2: toModelInfo matches the V2 Model.Info shape", () => {
+  const info = toModelInfo({
+    id: "openpangu-2.0-pro",
+    name: "OpenPangu-2.0-Pro",
+    context: 131072,
+    output: 32768,
+    images: true,
+    reasoning: true,
+  })
+  assert.equal(info.id, "openpangu-2.0-pro")
+  assert.equal(info.modelID, "openpangu-2.0-pro")
+  assert.equal(info.providerID, "codearts")
+  assert.deepEqual(info.capabilities.input, ["text", "image"], "modality arrays, not objects")
+  assert.deepEqual(info.capabilities.output, ["text"])
+  assert.ok(Array.isArray(info.cost), "cost is an array of tiers")
+  assert.equal(info.enabled, true)
+  assert.deepEqual(info.variants, [])
+  assert.deepEqual(info.limit, { context: 131072, output: 32768 })
+  // must survive a structured clone (no functions/symbols anywhere)
+  const clone = JSON.parse(JSON.stringify(info))
+  assert.deepEqual(clone, info)
+})
+
+test("signNativeRequest signs and shapes a chat Request (V2 http.request)", async () => {
+  const req = new Request("https://example.com/api/v2/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: "Bearer sk-must-not-reach-gateway",
+    },
+    body: JSON.stringify({
+      model: "openpangu-2.0-pro",
+      messages: [{ role: "user", content: "hi" }],
+    }),
+  })
+  const out = await signNativeRequest(req, AK, SK, "ses_real_session")
+  assert.match(out.headers.get("authorization"), /^SDK-HMAC-SHA256 Access=TESTAK/, "Bearer replaced by signature")
+  assert.equal(out.headers.get("user-session-id"), "ses_real_session", "gateway session follows host session")
+  assert.equal(out.headers.get("model-id"), "openpangu-2.0-pro")
+  assert.equal(out.headers.get("content-type"), "application/json", "original headers kept")
+
+  const body = JSON.parse(await out.text())
+  assert.equal(body.stream, true)
+  assert.equal(body.tool_stream, true)
+  assert.equal(body.user_prompt, "hi")
+  assert.equal(body.model, "openpangu-2.0-pro")
+})
+
+test("signNativeRequest leaves non-chat requests unshaped but signed", async () => {
+  const req = new Request("https://example.com/v1/agent-center/agents/useragents?offset=0&limit=100")
+  const out = await signNativeRequest(req, AK, SK)
+  assert.match(out.headers.get("authorization"), /^SDK-HMAC-SHA256 Access=TESTAK/)
+  assert.equal(out.headers.get("model-id"), null, "no CLI routing headers on discovery calls")
+  assert.equal(await out.text(), "", "GET keeps no body")
+})
+
+// ---------------------------------------------------------------------------
+// V2 setup(ctx): provider/integration/tool transforms + http.request signing
+// ---------------------------------------------------------------------------
+
+function makeV2Context(options = {}) {
+  const recorded = {
+    providerCalls: [],
+    sessionHooks: [],
+    integrationCalls: [],
+    tools: [],
+    reloads: 0,
+  }
+  const ctx = {
+    options,
+    location: { directory: FAKE_HOME },
+    provider: {
+      transform: async (cb) => {
+        const calls = []
+        cb({
+          add: (input) => calls.push({ op: "add", input }),
+          update: (...a) => calls.push({ op: "update", args: a }),
+          models: { set: (...a) => calls.push({ op: "models.set", args: a }) },
+        })
+        recorded.providerCalls.push(calls)
+      },
+      reload: async () => {
+        recorded.reloads++
+      },
+    },
+    integration: {
+      transform: async (cb) => {
+        cb({ method: { update: (input) => recorded.integrationCalls.push(input) } })
+      },
+      connection: {
+        active: async () => undefined,
+        resolve: async () => undefined,
+      },
+    },
+    tool: {
+      transform: async (cb) => {
+        cb({ add: (tool) => recorded.tools.push(tool) })
+      },
+    },
+    session: {
+      hook: async (name, cb, opts) => {
+        recorded.sessionHooks.push({ name, cb, opts })
+      },
+    },
+  }
+  return { ctx, recorded }
+}
+
+test("V2 setup: provider transform registers JSON-safe source without credentials", async () => {
+  const mod = await import("../dist/index.js?v2-setup")
+  const { ctx, recorded } = makeV2Context({ baseURL: "https://example.com" })
+  const cleanup = await mod.default.setup(ctx)
+
+  assert.equal(typeof cleanup, "function", "setup returns a cleanup function")
+  cleanup()
+
+  const add = recorded.providerCalls[0].find((c) => c.op === "add")
+  assert.ok(add, "provider source contributed via editor.add")
+  const { info, models } = add.input
+  assert.equal(info.id, "codearts")
+  assert.equal(info.activation, "enabled", "stays registered for /connect without creds")
+  assert.equal(info.package, "@opencode/ai/providers/openai-compatible")
+  assert.equal(info.settings.baseURL, "https://example.com/api/v2")
+  assert.equal(info.settings.apiKey, "codearts-signed")
+  // the DataCloneError regression: no function may hide in settings
+  assert.deepEqual(JSON.parse(JSON.stringify(info.settings)), info.settings, "settings JSON-safe")
+
+  assert.equal(models.length, 1)
+  assert.equal(models[0].id, "connect-required", "hint model without credentials")
+  assert.equal(models[0].modelID, "connect-required")
+  assert.match(models[0].name, /connect/i)
+})
+
+test("V2 setup: http.request hook is provider-scoped and signs requests", async (t) => {
+  const savedAk = process.env.CODEARTS_CLI_AK
+  const savedSk = process.env.CODEARTS_CLI_SK
+  process.env.CODEARTS_CLI_AK = "TESTAK"
+  process.env.CODEARTS_CLI_SK = "TESTSK"
+  t.after(() => {
+    if (savedAk === undefined) delete process.env.CODEARTS_CLI_AK
+    else process.env.CODEARTS_CLI_AK = savedAk
+    if (savedSk === undefined) delete process.env.CODEARTS_CLI_SK
+    else process.env.CODEARTS_CLI_SK = savedSk
+  })
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.includes("useragents")) return Response.json({ agents: [{ agent_id: "ag1", supported_clients: ["CLI"] }] })
+    if (url.includes("agents/detail")) {
+      return Response.json({
+        gpts: {
+          models: [
+            {
+              model_name: "OpenPangu-2.0-Pro",
+              model_alias: "openpangu-2.0-pro",
+              model_parameters: { context_window: 131072, max_tokens: 32768 },
+            },
+          ],
+        },
+      })
+    }
+    throw new Error("unexpected url " + url)
+  }
+  t.after(() => {
+    globalThis.fetch = realFetch
+  })
+
+  const mod = await import("../dist/index.js?v2-hook")
+  const { ctx, recorded } = makeV2Context({ baseURL: "https://example.com" })
+  const cleanup = await mod.default.setup(ctx)
+  cleanup()
+
+  const hook = recorded.sessionHooks.find((h) => h.name === "http.request")
+  assert.ok(hook, "http.request hook registered")
+  assert.deepEqual(hook.opts, { providerID: "codearts" }, "hook scoped to the provider")
+
+  // discovered models (not the hint) ride the provider source
+  const add = recorded.providerCalls[0].find((c) => c.op === "add")
+  assert.deepEqual(add.input.models.map((m) => m.id), ["openpangu-2.0-pro"])
+
+  // foreign-provider events pass through untouched
+  const foreign = {
+    sessionID: "ses_other",
+    model: { providerID: "anthropic", id: "claude" },
+    request: new Request("https://api.anthropic.com/v1/messages", { method: "POST", body: "{}" }),
+  }
+  await hook.cb(foreign)
+  assert.equal(foreign.request.headers.get("authorization"), null, "foreign provider untouched")
+
+  // own-provider events get a signed replacement request
+  const event = {
+    sessionID: "ses_main",
+    model: { providerID: "codearts", id: "openpangu-2.0-pro" },
+    request: new Request("https://example.com/api/v2/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer placeholder" },
+      body: JSON.stringify({ model: "openpangu-2.0-pro", messages: [{ role: "user", content: "介绍你自己" }] }),
+    }),
+  }
+  await hook.cb(event)
+  assert.match(event.request.headers.get("authorization"), /^SDK-HMAC-SHA256 Access=TESTAK/)
+  assert.equal(event.request.headers.get("user-session-id"), "ses_main")
+  const body = JSON.parse(await event.request.text())
+  assert.equal(body.stream, true)
+  assert.equal(body.user_prompt, "介绍你自己")
+})
+
+test("V2 setup: without credentials the hook leaves requests unsigned", async () => {
+  const mod = await import("../dist/index.js?v2-noauth")
+  const { ctx, recorded } = makeV2Context({})
+  const cleanup = await mod.default.setup(ctx)
+  cleanup()
+
+  const hook = recorded.sessionHooks.find((h) => h.name === "http.request")
+  const event = {
+    sessionID: "ses_main",
+    model: { providerID: "codearts", id: "connect-required" },
+    request: new Request("https://example.com/api/v2/chat/completions", {
+      method: "POST",
+      body: JSON.stringify({ model: "connect-required", messages: [] }),
+    }),
+  }
+  await hook.cb(event)
+  assert.equal(event.request.headers.get("authorization"), null, "no signature without credentials")
+})
+
+test("V2 setup: integration key method collects the AK, tool is registered", async () => {
+  const mod = await import("../dist/index.js?v2-auth")
+  const { ctx, recorded } = makeV2Context({})
+  const cleanup = await mod.default.setup(ctx)
+  cleanup()
+
+  const method = recorded.integrationCalls[0]
+  assert.equal(method.integrationID, "codearts")
+  assert.equal(method.method.type, "key")
+  assert.match(method.method.label, /SK/)
+  assert.equal(method.method.form[0].key, "ak")
+  assert.equal(method.method.form[0].required, true)
+
+  const vision = recorded.tools.find((tool) => tool.name === "codearts_vision")
+  assert.ok(vision, "vision tool registered by default")
+  assert.equal(vision.input.type, "object")
+  assert.ok(vision.input.properties.image)
+  await assert.rejects(
+    () => vision.execute({ prompt: "hi" }),
+    /connect|AK\/SK/i,
+    "execute without credentials yields the connect hint",
+  )
+})
+
+test("V2 setup: visionTool:false skips the tool transform", async () => {
+  const mod = await import("../dist/index.js?v2-notool")
+  const { ctx, recorded } = makeV2Context({ visionTool: false })
+  const cleanup = await mod.default.setup(ctx)
+  cleanup()
+  assert.equal(recorded.tools.length, 0)
 })
 
 process.on("unhandledRejection", (e) => {
