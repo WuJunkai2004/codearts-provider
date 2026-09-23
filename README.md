@@ -1,16 +1,16 @@
 # opencode-codearts-provider
 
-OpenCode 插件：将华为云 CodeArts（snap-access InferHub）模型接入 opencode。
+将华为云 CodeArts 提供的模型，通过插件，接入 opencode。
 
 ## 工作原理
 
 - 复刻 CodeArts CLI（agentkernel）的请求签名：华为云 APIG `SDK-HMAC-SHA256`
-- 动态模型发现：`/v1/agent-center/agents/useragents` → `/v1/agent-center/agents/detail`（与官方 CLI 相同的链路，`Agent-Type: AgentCenter` 头 + AK/SK 签名）
-- **模型清单文件缓存**：发现结果写入 `~/.local/share/opencode/codearts-models.json`；发现失败时回退到缓存（内存 → 文件），不再有硬编码兜底模型。详见[模型缓存](#模型缓存)
-- **模型 ID = `model_alias`（小写路由别名），显示名 = `model_name`**。例如显示名 `OpenPangu-2.0-Pro` 的路由 ID 是 `openpangu-2.0-pro`，直接用 `model_name` 请求会报 `InferHub.002002009 not registered`（GLM-5.2 恰好别名=名字，因此曾误判为"只有 GLM 能用"）
+- 动态模型发现：`/v1/agent-center/agents/useragents` → `/v1/agent-center/agents/detail`
+- **模型清单文件缓存**：发现结果写入 `~/.local/share/opencode/codearts-models.json`；发现失败时回退到缓存。详见[模型缓存](#模型缓存)
+- **模型 ID = `model_alias`（小写路由别名），显示名 = `model_name`**。例如显示名 `OpenPangu-2.0-Pro` 的路由 ID 是 `openpangu-2.0-pro`，直接用 `model_name` 请求会报 `InferHub.002002009 not registered`
 - 推理端点：`POST {base}/api/v2/chat/completions`（OpenAI 兼容，`@ai-sdk/openai-compatible`）
-- 通过插件 `config` / `auth` hook 注入 `options.fetch` 签名函数：每个请求（含流式）都会计算 body SHA256 并替换 Authorization 头（**V1 方式**；V2 见下条）
-- **V2（opencode 2.x）双形态入口**：同一份产物 default export `{ id, server, setup }`——V1 宿主调用 `server()`（四 hook），V2 宿主调用 `setup(ctx)`：
+- **V1 方式**：通过插件 `config` / `auth` hook 注入 `options.fetch` 签名函数：每个请求（含流式）都会计算 body SHA256 并替换 Authorization 头
+- **V2 双形态入口**：同一份产物 default export `{ id, server, setup }`——V1 宿主调用 `server()`（四 hook），V2 宿主调用 `setup(ctx)`：
   - `config` hook → `ctx.provider.transform`（`editor.add({ info, models })`，模型为 V2 `Model.Info` 形状：`modelID`/`capabilities.input[]`/`cost[]`/`enabled` 等）
   - `options.fetch` 注入 → `ctx.session.hook("http.request", …, { providerID: "codearts" })`：对原生 `Request` 原地整形 + 签名（`signNativeRequest`），`user-session-id` 直接用宿主真实 session ID（会话计数跟随会话而非进程）
   - **V2 的 provider `settings` 必须是纯 JSON**：注册表会对定义做 structuredClone，塞函数（如 fetch）会让整个 transform 抛 `DataCloneError`、插件被禁用——这是 V2 适配曾"看不到模型"的根因
@@ -23,9 +23,17 @@ OpenCode 插件：将华为云 CodeArts（snap-access InferHub）模型接入 op
 
 ## 安装
 
-### 方式一：本地开发（全局生效）
+### 方式一：opencode 插件安装
 
-先构建，再在全局配置 `~/.config/opencode/opencode.jsonc` 的 `plugin` 数组中添加本地包目录的 `file://` 路径：
+在 opencode 中，使用 ctrl+P 打开命令面板，输入 `plugin install`，然后输入：
+
+```
+opencode-codearts-provider
+```
+
+### 方式二：本地开发
+
+先构建，再在对应的 `opencode.jsonc` 的 `plugin` 数组中添加本地包目录的 `file://` 路径：
 
 ```
 npm install
@@ -46,25 +54,16 @@ npm run build        # 生成 dist/（opencode 加载的就是 dist/index.js）
 
 opencode 会读取包的 `exports["./server"]`（`dist/index.js`），无需发布 npm。V2 下目录形态的插件按 `server.*` → `index.*` 顺序解析入口；**CLI/TUI 专用插件才放 `cli.json` 且解析 `tui.*` 入口——server 插件放 `cli.json` 不会被服务器加载**。
 
-### 方式二：发布为 npm 包后
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugins": ["opencode-codearts-provider"]
-}
-```
-
 ## 凭证
 
-环境变量方式：
+推荐使用 `/connect` 命令选择 Huawei CodeArts，两步输入：第 1 步输入 AK（自定义提示页），第 2 步输入 SK（内置 API key 页）。存储格式：`auth.json` 中 `key` = SK、`metadata.ak` = AK。
+
+或使用环境变量方式：
 
 ```
 CODEARTS_CLI_AK=<你的AK>
 CODEARTS_CLI_SK=<你的SK>
 ```
-
-或用 `/connect` 命令选择 Huawei CodeArts，**两步输入**：第 1 步输入 AK（自定义提示页），第 2 步输入 SK（内置 API key 页）。存储格式：`auth.json` 中 `key` = SK、`metadata.ak` = AK。
 
 优先级链：`provider options` > `plugin options` > 环境变量 `CODEARTS_CLI_AK/SK` > `/connect` 存储的凭证。
 
@@ -73,7 +72,7 @@ CODEARTS_CLI_SK=<你的SK>
 ## 使用
 
 ```
-opencode models                                  # 5 个模型
+opencode models
 opencode run -m codearts/openpangu-2.0-pro "hello"
 opencode run -m codearts/GLM-5.2 "hello"
 ```
@@ -92,13 +91,13 @@ opencode run -m codearts/GLM-5.2 "hello"
 - **结构**：`{ base, fetchedAt, models }`；按 `base` 匹配，换 base URL 自动失效
 - **回退链**：发现成功 → 写缓存；发现失败或返回空 → 内存缓存 → 文件缓存 → `null`（走 `connect-required` 提示模型）
 - **不再有硬编码模型**：`EXTRA_MODELS`（`src/index.ts`）和 `discover.ts` 的 `FALLBACK_MODELS` 均已删除。现在没有"账号未注册但硬编码在列表里"的模型，模型清单完全来自 agent-center 或缓存
-- 缓存是 best-effort：写失败（如 HOME 只读）只影响回退能力，不影响插件运行
+- 缓存是 best-effort：写失败只影响回退能力，不影响插件运行
 
 > 缓存**不按 `fetchedAt` 过期**：模型清单变化很少，且每次 hook 都会尝试重新发现，失败时才用缓存。删掉该文件即可强制重新发现。
 
 ## 视觉工具（`codearts_vision`）
 
-主模型（GLM-5.2 / OpenPangu 等）没有视觉能力。插件注册一个 LLM 工具 `codearts_vision`：内部把图片交给固定的视觉模型（默认 `Qwen3-VL-235B`，路由别名）转成文字，再把文字交给主模型。
+插件注册一个 LLM 工具 `codearts_vision`：内部把图片交给固定的视觉模型（默认 `Qwen3-VL-235B`，路由别名）转成文字，再把文字交给主模型。
 
 - **注册时机**：`visionTool` 选项不为 `false` 时始终注册（默认开启）。**凭据在执行时惰性解析**——`config` hook 首次启动时可能读不到 `/connect` 刚写的凭据，若在注册期判断会导致工具永久缺失。无凭据时调用会返回明确错误（提示 `/connect`），而不是静默失败。
 - **参数**（三选一）：`image`（本地路径，相对路径按会话项目目录解析）/ `image_url`（远程 URL 或 `data:` URL）；`prompt` 可选，缺省为"详细描述这张图片"。
@@ -127,17 +126,17 @@ opencode run -m codearts/GLM-5.2 "hello"
 
 ## 模型清单（2026-09 实测）
 
-| 模型 ID（= model_alias） | 显示名（model_name） | 来源 | 文本 | 图片 |
-|---|---|---|---|---|
-| `openpangu-2.0-pro` | OpenPangu-2.0-Pro | agent-center 下发 | ✅ | ❌ |
-| `openpangu-2.0-flash` | OpenPangu-2.0-Flash | agent-center 下发 | ✅ | ❌ |
-| `GLM-5.2` | GLM-5.2 | agent-center 下发 | ✅ | ❌（实测 406） |
-| `glm-5.2-sft-harmony` | GLM-5.2-ArkTS-SPARK | agent-center 下发 | ✅ | ❌ |
-| `Qwen3-VL-235B` | Qwen3-VL-235B | agent-center 下发 | ✅ | ✅ |
+| 模型 ID（= model_alias） | 显示名（model_name） | 来源              | 文本 | 图片 |
+| ------------------------ | -------------------- | ----------------- | ---- | ---- |
+| `openpangu-2.0-pro`      | OpenPangu-2.0-Pro    | agent-center 下发 | ✅   | ❌   |
+| `openpangu-2.0-flash`    | OpenPangu-2.0-Flash  | agent-center 下发 | ✅   | ❌   |
+| `GLM-5.2`                | GLM-5.2              | agent-center 下发 | ✅   | ❌   |
+| `glm-5.2-sft-harmony`    | GLM-5.2-ArkTS-SPARK  | agent-center 下发 | ✅   | ❌   |
+| `Qwen3-VL-235B`          | Qwen3-VL-235B        | agent-center 下发 | ✅   | ✅   |
 
-模型清单**完全来自 agent-center 下发**（失败时用[文件缓存](#模型缓存)），插件不再硬编码任何模型。
+模型清单**完全来自 agent-center 下发**。
 
-以下模型网关可路由但**该账号未注册**（`InferHub.002002009 not registered`），因此不在下发清单中：`Qwen3.6-27B-VL`、`Qwen3.5-397B-A17B-VL`、`Qwen3-Coder-30B-A3B-Instruct`、`ClaudeV1`。用 `model_name`（显示名）请求 Pangu/ArkTS 同样报 not registered——必须用别名。
+以下模型网关可路由但**该账号未注册**（`InferHub.002002009 not registered`），因此不在下发清单中：`Qwen3.6-27B-VL`、`Qwen3.5-397B-A17B-VL`、`Qwen3-Coder-30B-A3B-Instruct`、`ClaudeV1`。
 
 ## 网关路由规则（gateway routing）
 
@@ -149,7 +148,7 @@ snap-access 网关**按请求形态路由**，chat 请求缺任何一项都会�
 
 注意：
 
-- **`user-session-id` 语义**：服务端按它计数会话，上限 3 个并发（`TM.00001041 并发会话数已达上限`，约 60-75 秒后释放）。插件按 `createSignedFetch` 实例生成一次、进程内不变——即一个 opencode 进程（含 `/new` 新开的对话）共用一个会话槽位，反而降低占用
+- **`user-session-id` 语义**：服务端按它计数会话，上限 3 个并发（`TM.00001041 并发会话数已达上限`，约 60-75 秒后释放）。插件按 `createSignedFetch` 实例生成一次、进程内不变——即一个 opencode 进程（含 `/new` 新开的对话）共用一个会话槽位
 - `/v1/sessions` 会话注册接口需要 `Agent-Type: PromptCenter` 头（AgentCenter/CodeBase 等报 TM.00001001）；CLI 启动时 POST 注册、每 120 秒心跳。插件未使用该接口，chat 直连即可
 
 ## 配置项
@@ -160,12 +159,12 @@ snap-access 网关**按请求形态路由**，chat 请求缺任何一项都会�
 "plugin": [["file:///D:/code/huaweicode/codearts-provider", { "baseURL": "https://snap-access.cn-north-4.myhuaweicloud.com", "ak": "...", "sk": "..." }]]
 ```
 
-| 选项 | 默认值 | 说明 |
-|---|---|---|
-| `baseURL` | `https://snap-access.cn-north-4.myhuaweicloud.com` | 服务 base URL |
-| `ak` / `sk` | 环境变量 `CODEARTS_CLI_AK/SK` | 凭证（完整优先级链见[凭证](#凭证)） |
-| `visionTool` | `true` | 是否注册 `codearts_vision` 工具 |
-| `visionModel` | `Qwen3-VL-235B` | 视觉工具使用的模型路由别名 |
+| 选项          | 默认值                                             | 说明                                |
+| ------------- | -------------------------------------------------- | ----------------------------------- |
+| `baseURL`     | `https://snap-access.cn-north-4.myhuaweicloud.com` | 服务 base URL                       |
+| `ak` / `sk`   | 环境变量 `CODEARTS_CLI_AK/SK`                      | 凭证（完整优先级链见[凭证](#凭证)） |
+| `visionTool`  | `true`                                             | 是否注册 `codearts_vision` 工具     |
+| `visionModel` | `Qwen3-VL-235B`                                    | 视觉工具使用的模型路由别名          |
 
 界面语言按 `CODEARTS_LANG` > `LC_ALL` > `LANG` 检测中文/英文（提示文案双语）。
 
@@ -384,12 +383,12 @@ chat("Qwen3-VL-235B", [{"role": "user", "content": [
 
 ### 5. 端点清单
 
-| 端点 | 用途 |
-|---|---|
-| `POST /api/v2/chat/completions` | 对话（OpenAI 兼容，SSE 流式；需 CLI 请求形态） |
-| `GET /v1/agent-center/agents/useragents` | agent 列表（需 `Agent-Type: AgentCenter`） |
-| `GET /v1/agent-center/agents/detail?agent_id=` | agent 详情（含模型清单，`model_alias` = 路由 ID） |
-| `POST /v1/sessions` | 会话注册（需 `Agent-Type: PromptCenter`；CLI 启动注册 + 120s 心跳；并发上限 3，按 `user-session-id` 计数） |
+| 端点                                           | 用途                                                                                                       |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `POST /api/v2/chat/completions`                | 对话（OpenAI 兼容，SSE 流式；需 CLI 请求形态）                                                             |
+| `GET /v1/agent-center/agents/useragents`       | agent 列表（需 `Agent-Type: AgentCenter`）                                                                 |
+| `GET /v1/agent-center/agents/detail?agent_id=` | agent 详情（含模型清单，`model_alias` = 路由 ID）                                                          |
+| `POST /v1/sessions`                            | 会话注册（需 `Agent-Type: PromptCenter`；CLI 启动注册 + 120s 心跳；并发上限 3，按 `user-session-id` 计数） |
 
 ## 文件结构
 
