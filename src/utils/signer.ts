@@ -1,4 +1,5 @@
 import { createHmac, createHash } from "node:crypto";
+import { isOpengwModel } from "./opengw.js";
 
 const enc = encodeURIComponent;
 const rfc3986 = (s: string): string =>
@@ -183,6 +184,11 @@ export function cliChatHeaders(
     headers["model-id"] = model;
     headers["model-name"] = model;
   }
+  // opengw-discovered models (deepseek-v4, glm-5.3, …) require this header
+  // to route past the snap-access gateway's "not registered" check.
+  if (model && isOpengwModel(model)) {
+    headers["maas_type"] = "benefit";
+  }
   return headers;
 }
 
@@ -238,7 +244,10 @@ export function createSignedFetch(
       const shaped = applyCliBodyShape(bodyStr);
       bodyStr = shaped.body;
       body = bodyStr;
-      outHeaders = mergeHeaders(baseHeaders, cliChatHeaders(shaped.model, sessionId));
+      outHeaders = mergeHeaders(
+        baseHeaders,
+        cliChatHeaders(shaped.model, sessionId),
+      );
     }
 
     const signed = signRequest(method, url, ak, sk, outHeaders, bodyStr);
@@ -284,7 +293,10 @@ export async function signNativeRequest(
     const shaped = applyCliBodyShape(bodyStr);
     bodyStr = shaped.body;
     body = bodyStr;
-    outHeaders = mergeHeaders(baseHeaders, cliChatHeaders(shaped.model, sessionId));
+    outHeaders = mergeHeaders(
+      baseHeaders,
+      cliChatHeaders(shaped.model, sessionId),
+    );
   }
 
   const signed = signRequest(method, url, ak, sk, outHeaders, bodyStr);

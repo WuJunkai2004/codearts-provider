@@ -5,6 +5,7 @@ import { discoverModels, type DiscoveredModel } from "./discover.js";
 import { detectLangZH, getTranslations } from "./i18n.js";
 import { HINT_MODEL_ID, PROVIDER_ID } from "./constants.js";
 import { resolveBase, resolveCreds } from "./credentials.js";
+import { syncOpengwModels } from "./opengw.js";
 
 // Cache of the last successful discovery, kept as a module-level fallback for
 // the brief window before the file cache is read (and for tests).
@@ -19,13 +20,16 @@ export async function fetchModels(
     opts as { ak?: string; sk?: string },
     pluginOptions,
   );
-  if (!creds)
+  if (!creds) {
+    syncOpengwModels(null);
     return { base, models: null as DiscoveredModel[] | null, creds: null };
+  }
   try {
     const discovered = await discoverModels(creds.ak, creds.sk, base);
     if (discovered.length > 0) {
       lastGoodModels = discovered;
       writeModelCache(base, discovered);
+      syncOpengwModels(discovered);
       return { base, models: discovered, creds };
     }
   } catch (e) {
@@ -41,6 +45,7 @@ export async function fetchModels(
     (lastGoodModels && lastGoodModels.length > 0 ? lastGoodModels : null) ??
     readModelCache(base)?.models ??
     null;
+  syncOpengwModels(cached);
   return { base, models: cached, creds };
 }
 

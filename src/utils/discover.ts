@@ -1,4 +1,5 @@
 import { createSignedFetch } from "./signer.js";
+import { OPENGW_BASE } from "./constants.js";
 
 export const DEFAULT_BASE = "https://snap-access.cn-north-4.myhuaweicloud.com";
 
@@ -11,6 +12,9 @@ export type DiscoveredModel = {
   reasoning?: boolean;
   images?: boolean;
   apiUrl?: string;
+  /** true if discovered via the opengw gateway — inference needs
+   * `maas_type: benefit` (registry in opengw.ts, applied in signer.ts). */
+  opengw?: boolean;
 };
 
 type AgentEntry = {
@@ -110,7 +114,7 @@ export async function discoverModels(
       supports_images?: boolean;
     };
   }> = detail.gpts?.models ?? [];
-  const models = gpts
+  const models: DiscoveredModel[] = gpts
     .filter((m) => m.model_parameters?.display_enabled !== false)
     .map((m) => {
       const p = m.model_parameters ?? {};
@@ -131,5 +135,56 @@ export async function discoverModels(
         apiUrl: base + "/api/v2",
       };
     });
+  // Merge models from the opengw gateway (IDE-exclusive models like
+  // deepseek-v4, glm-5.3). Discovery uses the same AK/SK; inference for
+  // these models requires a `maas_type: benefit` header (see opengw.ts).
+  try {
+    for (const m of await fetchOpengwModels(ak, sk)) {
+      if (!models.some((x) => x.id === m.id)) models.push(m);
+    }
+  } catch (e) {
+    console.error(
+      "[codearts-provider] opengw model discovery failed:",
+      (e as Error)?.message ?? e,
+    );
+  }
   return models;
+}
+
+/** Discover models from the opengw gateway (IDE-exclusive models).
+ * Uses the same AK/SK signing as snap-access. The returned models carry
+ * `opengw: true`; models.ts registers them in the opengw.ts registry so
+ * signer.ts adds `maas_type: benefit` on inference.
+ * Best-effort: failures are caught by the caller. */
+async function fetchOpengwModels(
+  ak: string,
+  sk: string,
+): Promise<DiscoveredModel[]> {
+  const doFetch = createSignedFetch(ak, sk);
+  const url = `${OPENGW_BASE}/api/v1/gateway/config`;
+  const res = await doFetch(url, {
+    method: "GET",
+    headers: { "Content-Type": "application/json" },
+  });
+  if (!res.ok)
+    throw new Error(
+      `opengw config failed: HTTP ${res.status} ${await res.text()}`,
+    );
+  const json = await res.json();
+  const models: Array<{
+    model_id: string;
+    model_name?: string;
+    context_window?: number;
+    max_tokens?: number;
+  }> = json?.result?.models ?? [];
+  return models.map((m) => ({
+    id: m.model_id,
+    name: m.model_name ?? m.model_id,
+    context: m.context_window ?? 131072,
+    output: m.max_tokens ?? 32768,
+    reasoning: false,
+    images: false,
+    apiUrl: DEFAULT_BASE + "/api/v2",
+    opengw: true,
+  }));
 }

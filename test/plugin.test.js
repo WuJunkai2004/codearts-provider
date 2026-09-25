@@ -191,6 +191,9 @@ test("discoverModels maps gpts.models into provider models", async (t) => {
         },
       })
     }
+    if (url.includes("gateway/config")) {
+      return Response.json({ result: { models: [] } })
+    }
     throw new Error("unexpected url " + url)
   }
   t.after(() => {
@@ -198,7 +201,7 @@ test("discoverModels maps gpts.models into provider models", async (t) => {
   })
 
   const models = await discoverModels(AK, SK, "https://example.com")
-  assert.equal(calls, 2)
+  assert.equal(calls, 3)
   assert.equal(models.length, 1)
   assert.equal(models[0].id, "GLM-5.2")
   assert.equal(models[0].context, 202752)
