@@ -65,6 +65,31 @@ export async function discoverModels(
   sk: string,
   base: string = DEFAULT_BASE,
 ): Promise<DiscoveredModel[]> {
+  const models = await discoverAgentCenter(ak, sk, base);
+  // Merge models from the opengw gateway (IDE-exclusive models like
+  // deepseek-v4, glm-5.3). Discovery uses the same AK/SK; inference for
+  // these models requires a `maas_type: benefit` header (see opengw.ts).
+  try {
+    for (const m of await discoverOpengw(ak, sk)) {
+      if (!models.some((x) => x.id === m.id)) models.push(m);
+    }
+  } catch (e) {
+    console.error(
+      "[codearts-provider] opengw model discovery failed:",
+      (e as Error)?.message ?? e,
+    );
+  }
+  return models;
+}
+
+/** Primary source: the agent-center model list on the snap-access gateway
+ * (`useragents` → `pickAgentId` → `detail`, requires the `Agent-Type:
+ * AgentCenter` header). Fails fast — any error propagates to the caller. */
+async function discoverAgentCenter(
+  ak: string,
+  sk: string,
+  base: string,
+): Promise<DiscoveredModel[]> {
   const doFetch = createSignedFetch(ak, sk);
   const agentListUrl = `${base}/v1/agent-center/agents/useragents?offset=0&limit=100`;
   const listRes = await doFetch(agentListUrl, {
@@ -135,19 +160,6 @@ export async function discoverModels(
         apiUrl: base + "/api/v2",
       };
     });
-  // Merge models from the opengw gateway (IDE-exclusive models like
-  // deepseek-v4, glm-5.3). Discovery uses the same AK/SK; inference for
-  // these models requires a `maas_type: benefit` header (see opengw.ts).
-  try {
-    for (const m of await fetchOpengwModels(ak, sk)) {
-      if (!models.some((x) => x.id === m.id)) models.push(m);
-    }
-  } catch (e) {
-    console.error(
-      "[codearts-provider] opengw model discovery failed:",
-      (e as Error)?.message ?? e,
-    );
-  }
   return models;
 }
 
@@ -156,7 +168,7 @@ export async function discoverModels(
  * `opengw: true`; models.ts registers them in the opengw.ts registry so
  * signer.ts adds `maas_type: benefit` on inference.
  * Best-effort: failures are caught by the caller. */
-async function fetchOpengwModels(
+async function discoverOpengw(
   ak: string,
   sk: string,
 ): Promise<DiscoveredModel[]> {

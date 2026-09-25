@@ -1,6 +1,6 @@
 {
   "name": "opencode-codearts-provider",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "OpenCode provider plugin for Huawei Cloud CodeArts (snap-access InferHub API, SDK-HMAC-SHA256 signed)",
   "type": "module",
   "exports": {
