@@ -6,9 +6,10 @@ import { createSignedFetch } from "./signer.js";
  * Minimal chat call against the CodeArts InferHub gateway, used by the vision
  * tool to turn an image into text with a fixed multimodal model.
  *
- * Uses its own createSignedFetch instance (and thus its own user-session-id):
- * the server counts concurrent sessions per user-session-id (limit 3), so the
- * vision sub-call must not share the main chat's slot.
+ * Uses its own createSignedFetch instance (and thus its own user-session-id,
+ * cached per AK so the id stays stable): the server counts concurrent
+ * sessions per user-session-id (limit 3), so the vision sub-call must not
+ * share the main chat's slot — and must not mint a new one per call either.
  */
 export type VisionRequest = {
   ak: string;
@@ -75,9 +76,25 @@ export function extractContent(
   return parts.join("");
 }
 
+/**
+ * One stable vision session per (process, AK): the gateway counts concurrent
+ * sessions by user-session-id, so a fresh id per call piles up occupied slots
+ * and trips M.00001041; a cached instance re-uses its single slot instead.
+ */
+const visionFetchByAk = new Map<string, ReturnType<typeof createSignedFetch>>();
+
+function visionFetch(ak: string, sk: string) {
+  let doFetch = visionFetchByAk.get(ak);
+  if (!doFetch) {
+    doFetch = createSignedFetch(ak, sk);
+    visionFetchByAk.set(ak, doFetch);
+  }
+  return doFetch;
+}
+
 export async function describeImage(req: VisionRequest): Promise<string> {
   const { ak, sk, base, model, image, prompt } = req;
-  const doFetch = req.fetchImpl ?? createSignedFetch(ak, sk);
+  const doFetch = req.fetchImpl ?? visionFetch(ak, sk);
   const url = `${base.replace(/\/$/, "")}/api/v2/chat/completions`;
   const body = {
     model,
