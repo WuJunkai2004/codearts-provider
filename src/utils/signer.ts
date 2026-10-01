@@ -92,7 +92,7 @@ export function randomSessionId(): string {
 
 /** Collect request headers (HeadersInit or Request) into a plain record,
  * case-insensitively deduped, dropping `authorization` (the SDK's Bearer
- * header must never reach the gateway — see README "APIG.0301"). */
+ * header must never reach the gateway — see AGENTS.md "APIG.0301"). */
 export function collectHeaders(
   src?: HeadersInit | Request,
 ): Record<string, string> {
@@ -157,8 +157,8 @@ export function applyCliBodyShape(bodyStr: string): {
   return { body: JSON.stringify(parsed), model };
 }
 
-/** Full CodeArts CLI header set for chat requests (see README "gateway
- * routing" section). `sessionId` maps one gateway session slot. */
+/** Full CodeArts CLI header set for chat requests (see AGENTS.md "Gateway
+ * protocol"). `sessionId` maps one gateway session slot. */
 export function cliChatHeaders(
   model: string,
   sessionId: string,
