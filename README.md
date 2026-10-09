@@ -5,8 +5,9 @@
 ## 工作原理
 
 - 复刻 CodeArts CLI（agentkernel）的请求签名（华为云 APIG `SDK-HMAC-SHA256`）与请求形态，直连 InferHub 网关
-- 模型清单来自账号的 agent-center 动态下发，带文件缓存兜底
+- 模型清单来自账号的 agent-center 动态下发，并合并 opengw 网关的 IDE 专属模型（deepseek-v4 / glm-5.3 等），带文件缓存兜底
 - 内置 `codearts_vision` 工具：主模型没有视觉能力时，用固定的视觉模型把图片转成文字
+- 内置每日自动签到（`USER_LOGIN` 每日签到领 1000 积分，benefit 模型的消耗额度），静默运行无需干预
 
 协议细节（签名算法、网关路由规则、端点清单）、代码结构与构建测试说明见 [AGENTS.md](AGENTS.md)。
 
@@ -100,7 +101,20 @@ opencode run -m codearts/GLM-5.2 "hello"
 这张截图报什么错？C:\Users\me\Pictures\error.png
 ```
 
-## 模型清单（2026-09 实测）
+## 每日签到（自动，非工具）
+
+逆向 VSCode 插件的 welfare（权益）系统所得：每日签到（`USER_LOGIN` campaign）领取 1000 通用积分，供 deepseek-v4 / glm-5.3 等 benefit 模型消耗。**签到是静默基建，刻意不注册为 LLM 工具**——领取是确定性账号操作，不应由模型概率性触发；自动签到已覆盖日常场景。
+
+- **自动签到**：插件启动及每 60 秒的后台刷新时尝试一次；**是否已签以服务端 `delivery` 状态为准**（本地不存状态文件，多实例/多机器共用账号不会互相误判），内存日界保证每账号每天只探测一次，失败自动退避 10 分钟再试
+- **领取流程与 IDE 一致**：claim 成功后自动 confirm，积分到账（`ELIGIBLE → CLAIMED → CONFIRMED`）
+- 一次性活动（学生认证 / 邀请奖励）在插件内没有领取路径，需要时用 `node test/live-check.js` 直查
+
+```jsonc
+// 完全关闭自动签到
+"plugin": [["file:///D:/code/huaweicode/codearts-provider", { "autoCheckin": false }]]
+```
+
+## 模型清单（2026-09/10 实测）
 
 | 模型 ID（= model_alias） | 显示名（model_name） | 来源              | 文本 | 图片 |
 | ------------------------ | -------------------- | ----------------- | ---- | ---- |
@@ -109,10 +123,14 @@ opencode run -m codearts/GLM-5.2 "hello"
 | `GLM-5.2`                | GLM-5.2              | agent-center 下发 | ✅   | ❌   |
 | `glm-5.2-sft-harmony`    | GLM-5.2-ArkTS-SPARK  | agent-center 下发 | ✅   | ❌   |
 | `Qwen3-VL-235B`          | Qwen3-VL-235B        | agent-center 下发 | ✅   | ✅   |
+| `deepseek-v4-flash-0731` | DeepSeek-V4-Flash    | opengw 下发       | ✅   | ❌   |
+| `glm-5.3-flash`          | GLM-5.3-Flash        | opengw 下发       | ✅   | ❌   |
+| `deepseek-v4-pro-0813`   | DeepSeek-V4-Pro      | opengw 下发       | ✅   | ❌   |
+| `deepseek-v4.1-flash`    | DeepSeek-V4.1-Flash  | opengw 下发       | ✅   | ❌   |
 
-模型清单**完全来自 agent-center 下发**。
+模型清单**完全来自服务端下发**（agent-center + opengw 两个网关合并，见 `AGENTS.md`）。
 
-以下模型网关可路由但**该账号未注册**（`InferHub.002002009 not registered`），因此不在下发清单中：`Qwen3.6-27B-VL`、`Qwen3.5-397B-A17B-VL`、`Qwen3-Coder-30B-A3B-Instruct`、`ClaudeV1`。
+opengw 来源的模型（deepseek-v4 系列 / glm-5.3）推理时自动附加 `maas_type: benefit` 头，消耗签到所得的通用积分；积分不足或当日未签到可能影响这些模型的可用额度。
 
 ## 配置项
 
@@ -122,14 +140,24 @@ opencode run -m codearts/GLM-5.2 "hello"
 "plugin": [["file:///D:/code/huaweicode/codearts-provider", { "baseURL": "https://snap-access.cn-north-4.myhuaweicloud.com", "ak": "...", "sk": "..." }]]
 ```
 
-| 选项          | 默认值                                             | 说明                                |
-| ------------- | -------------------------------------------------- | ----------------------------------- |
-| `baseURL`     | `https://snap-access.cn-north-4.myhuaweicloud.com` | 服务 base URL                       |
-| `ak` / `sk`   | 环境变量 `CODEARTS_CLI_AK/SK`                      | 凭证（完整优先级链见[凭证](#凭证)） |
-| `visionTool`  | `true`                                             | 是否注册 `codearts_vision` 工具     |
-| `visionModel` | `Qwen3-VL-235B`                                    | 视觉工具使用的模型路由别名          |
+| 选项           | 默认值                                             | 说明                                       |
+| -------------- | -------------------------------------------------- | ------------------------------------------ |
+| `baseURL`      | `https://snap-access.cn-north-4.myhuaweicloud.com` | 服务 base URL                              |
+| `ak` / `sk`    | 环境变量 `CODEARTS_CLI_AK/SK`                      | 凭证（完整优先级链见[凭证](#凭证)）        |
+| `visionTool`   | `true`                                             | 是否注册 `codearts_vision` 工具            |
+| `visionModel`  | `Qwen3-VL-235B`                                    | 视觉工具使用的模型路由别名                 |
+| `autoCheckin`  | `true`                                             | 是否启用每日自动签到（后台静默，每天一次） |
 
 界面语言按 `CODEARTS_LANG` > `LC_ALL` > `LANG` 检测中文/英文（提示文案双语）。
+
+## 故障排查
+
+**报错 `OpenAI Chat stream ended without finish_reason`**：这不是模型不可用，而是网关把错误包装成一行伪 SSE（`data:{"text":"[DONE]","error_code":...}`）后直接关流，AI SDK 因此报这个误导性错误。已实测到的两类触发原因：
+
+1. **账号级限流**（最常见）：`InferHub.ModelArts.81114.429 — Too many requests, the rate limit is 5000000 tokens per minute`。所有 CodeArts 模型共享每分钟 500 万 token 配额；1M 上下文模型（deepseek-v4 系列）连续多轮工具调用很容易触顶。**约 1 分钟后自动恢复**，重试即可。
+2. **请求体含 max-token 字段**（已在插件内修复）：`InferHub.001001005.400 The request param is invalid`。opencode v2.0.25 起会在请求体带 `max_completion_tokens`，InferHub 对该字段（以及 `max_tokens`）直接拒绝。插件的 `applyCliBodyShape` 现已剥离这些字段——若你仍遇到此错误，说明运行的 `dist/index.js` 过旧：`npm run build` 后重启 opencode。
+
+判断方法：直接跑 `node test/live-check.js`（带 `CODEARTS_CLI_AK/SK` 环境变量），看各模型是否正常返回。
 
 ## 开发
 
