@@ -10,6 +10,7 @@ import type { Model, Provider, Auth } from "@opencode-ai/sdk/v2";
 import { z } from "zod";
 import { createSignedFetch } from "../utils/signer.js";
 import { describeImage, imageToDataUrl } from "../utils/vision.js";
+import { autoCheckin } from "../utils/welfare.js";
 import { detectLangZH, getTranslations } from "../utils/i18n.js";
 import {
   DEFAULT_VISION_MODEL,
@@ -35,10 +36,13 @@ export const server: Plugin = async (_input, pluginOptions = {}) => {
   const po = pluginOptions as {
     visionTool?: boolean;
     visionModel?: string;
+    autoCheckin?: boolean;
   };
   const visionEnabled = po.visionTool !== false;
+  const autoCheckinEnabled = po.autoCheckin !== false;
   const visionModel = po.visionModel ?? DEFAULT_VISION_MODEL;
-  const t = getTranslations(detectLangZH());
+  const langZH = detectLangZH();
+  const t = getTranslations(langZH);
 
   // The vision tool is a plugin-level LLM tool, registered whenever the option
   // is on. Credentials are resolved lazily at call time: the config hook may
@@ -99,6 +103,20 @@ export const server: Plugin = async (_input, pluginOptions = {}) => {
     // registered (so it shows up in /connect even without credentials);
     // the signed fetch is only injected when credentials exist.
     config: async (config: Config) => {
+      // Daily welfare check-in (每日签到领积分): fire-and-forget so a network
+      // hiccup never delays startup; the server's delivery state is the
+      // "already claimed today" truth, guarded in memory (no state file).
+      if (autoCheckinEnabled) {
+        const creds = resolveCreds({}, pluginOptions);
+        if (creds) {
+          void autoCheckin({
+            ak: creds.ak,
+            sk: creds.sk,
+            base: resolveBase({}, pluginOptions),
+            lang: langZH ? "zh-cn" : "en-us",
+          }).catch(() => {});
+        }
+      }
       config.provider = config.provider ?? {};
       const { base, models, creds } = await fetchModels({}, pluginOptions);
 

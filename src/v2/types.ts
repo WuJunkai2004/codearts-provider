@@ -79,12 +79,13 @@ export interface IntegrationEditor {
 }
 
 export interface ToolEditor {
-  add(tool: {
+  /** Generic per-tool input: each add() infers its own execute input shape. */
+  add<T>(tool: {
     readonly name: string;
     readonly description: string;
     readonly input: Record<string, unknown>;
     readonly execute: (
-      input: { image?: string; image_url?: string; prompt?: string },
+      input: T,
       context?: { readonly sessionID?: string },
     ) => Promise<{ content: string }>;
   }): void;

@@ -19,6 +19,7 @@
 
 import { signNativeRequest } from "../utils/signer.js";
 import { describeImage, imageToDataUrl } from "../utils/vision.js";
+import { autoCheckin } from "../utils/welfare.js";
 import { detectLangZH, getTranslations } from "../utils/i18n.js";
 import {
   DEFAULT_VISION_MODEL,
@@ -76,10 +77,13 @@ export async function setup(ctx: V2Context): Promise<(() => void) | void> {
   const options = ctx.options as {
     visionTool?: boolean;
     visionModel?: string;
+    autoCheckin?: boolean;
   };
   const visionEnabled = options.visionTool !== false;
+  const autoCheckinEnabled = options.autoCheckin !== false;
   const visionModel = options.visionModel ?? DEFAULT_VISION_MODEL;
-  const t = getTranslations(detectLangZH());
+  const langZH = detectLangZH();
+  const t = getTranslations(langZH);
   // V2 tool context carries no directory (unlike V1); capture the instance
   // location for resolving relative image paths.
   const directory = ctx.location?.directory ?? process.cwd();
@@ -207,7 +211,7 @@ export async function setup(ctx: V2Context): Promise<(() => void) | void> {
           },
           additionalProperties: false,
         },
-        execute: async (input) => {
+        execute: async (input: { image?: string; image_url?: string; prompt?: string }) => {
           const creds = resolveCreds({}, ctx.options);
           if (!creds) throw new Error(t.visionNoCreds);
 
@@ -236,7 +240,10 @@ export async function setup(ctx: V2Context): Promise<(() => void) | void> {
 
   // Background refresh: re-discover models periodically and reload the
   // provider registry when the inventory changes (e.g. credentials were
-  // connected after startup). Docs-documented reload pattern.
+  // connected after startup). Docs-documented reload pattern. The daily
+  // welfare check-in rides the same heartbeat: the server's delivery state
+  // is the truth, an in-memory day-guard makes it one delivery GET per
+  // account per day, failures back off instead of retrying every minute.
   let refreshing = false;
   const refresh = async () => {
     if (refreshing) return;
@@ -247,6 +254,17 @@ export async function setup(ctx: V2Context): Promise<(() => void) | void> {
       if (JSON.stringify(nextModels) !== JSON.stringify(source.models)) {
         source.models = nextModels;
         await ctx.provider?.reload?.();
+      }
+      if (autoCheckinEnabled) {
+        const creds = await resolveRequestCreds(ctx, options).catch(() => null);
+        if (creds) {
+          await autoCheckin({
+            ak: creds.ak,
+            sk: creds.sk,
+            base: resolveBase({}, options),
+            lang: langZH ? "zh-cn" : "en-us",
+          });
+        }
       }
     } catch {
       // keep the last good inventory
