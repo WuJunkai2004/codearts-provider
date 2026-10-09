@@ -138,6 +138,12 @@ export function applyCliBodyShape(bodyStr: string): {
     parsed = {};
   }
   const model = typeof parsed.model === "string" ? parsed.model : "";
+  // Hosts may inject max-token fields 
+  // opencode v2.0.25 sends max_completion_tokens: <limit.output>`).
+  // InferHub rejects both `max_completion_tokens` AND `max_tokens` with
+  // `InferHub.001001005.400 The request param is invalid`.
+  delete parsed.max_completion_tokens;
+  delete parsed.max_tokens;
   parsed.stream = true;
   parsed.tool_stream = parsed.tool_stream ?? true;
   if (!Array.isArray(parsed.messages)) parsed.messages = [];

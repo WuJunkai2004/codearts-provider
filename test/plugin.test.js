@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { signRequest, sdkDate, createSignedFetch, signNativeRequest } from "../.tsc/utils/signer.js"
+import { signRequest, sdkDate, createSignedFetch, signNativeRequest, applyCliBodyShape } from "../.tsc/utils/signer.js"
 import { discoverModels, pickAgentId } from "../.tsc/utils/discover.js"
 import { extractContent, imageToDataUrl } from "../.tsc/utils/vision.js"
 import { readModelCache, writeModelCache } from "../.tsc/utils/cache.js"
@@ -131,6 +131,26 @@ test("createSignedFetch adds CLI routing headers + body fields on chat requests"
   assert.equal(body.tool_stream, true, "tool_stream added")
   assert.equal(body.user_prompt, "介绍你自己", "user_prompt = last user message")
   assert.equal(body.model, "openpangu-2.0-pro", "model unchanged")
+})
+
+test("applyCliBodyShape strips host-injected max-token fields (InferHub 001001005)", () => {
+  // opencode v2.0.25 sends max_completion_tokens: <limit.output>; InferHub
+  // rejects both max_completion_tokens and max_tokens with
+  // "The request param is invalid" wrapped as a fake [DONE] SSE line.
+  const out = applyCliBodyShape(JSON.stringify({
+    model: "GLM-5.2",
+    messages: [{ role: "user", content: "hi" }],
+    max_completion_tokens: 131072,
+    max_tokens: 4096,
+    store: false,
+  }))
+  const body = JSON.parse(out.body)
+  assert.equal(body.max_completion_tokens, undefined, "max_completion_tokens stripped")
+  assert.equal(body.max_tokens, undefined, "max_tokens stripped")
+  assert.equal(body.stream, true)
+  assert.equal(body.tool_stream, true)
+  assert.equal(body.user_prompt, "hi")
+  assert.equal(body.store, false, "tolerated fields kept")
 })
 
 test("createSignedFetch leaves non-chat requests untouched", async (t) => {
