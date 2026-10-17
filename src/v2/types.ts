@@ -10,6 +10,21 @@ export interface V2Context {
   readonly options: PluginOptions;
   /** Where this plugin instance loaded (tool path resolution base). */
   readonly location?: { readonly directory?: string };
+  /** Host plugin-RPC domain (≥ v2.0.25): register methods other plugins
+   * (TUI included) can call over the server's /api/rpc route. */
+  readonly rpc?: {
+    readonly register?: (
+      definition: {
+        readonly id: string;
+        readonly methods: Record<string, { readonly input: unknown; readonly output: unknown }>;
+        readonly events: Record<string, unknown>;
+      },
+      handlers: Record<
+        string,
+        (input: unknown, context: { readonly signal: AbortSignal }) => Promise<unknown>
+      >,
+    ) => Promise<unknown>;
+  };
   readonly provider?: {
     readonly transform: (
       cb: (editor: ProviderEditor) => void,

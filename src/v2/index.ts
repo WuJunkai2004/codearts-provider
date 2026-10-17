@@ -20,6 +20,7 @@
 import { signNativeRequest } from "../utils/signer.js";
 import { describeImage, imageToDataUrl } from "../utils/vision.js";
 import { autoCheckin } from "../utils/welfare.js";
+import { registerQuotaRpc } from "../utils/quota-panel.js";
 import { detectLangZH, getTranslations } from "../utils/i18n.js";
 import {
   DEFAULT_VISION_MODEL,
@@ -211,7 +212,11 @@ export async function setup(ctx: V2Context): Promise<(() => void) | void> {
           },
           additionalProperties: false,
         },
-        execute: async (input: { image?: string; image_url?: string; prompt?: string }) => {
+        execute: async (input: {
+          image?: string;
+          image_url?: string;
+          prompt?: string;
+        }) => {
           const creds = resolveCreds({}, ctx.options);
           if (!creds) throw new Error(t.visionNoCreds);
 
@@ -272,6 +277,11 @@ export async function setup(ctx: V2Context): Promise<(() => void) | void> {
       refreshing = false;
     }
   };
+  void registerQuotaRpc({
+    register: ctx.rpc?.register,
+    resolveCreds: () => resolveRequestCreds(ctx, options),
+  }).catch(() => {});
+
   const timer = setInterval(() => void refresh().catch(() => {}), 60_000);
   return () => clearInterval(timer);
 }
