@@ -127,6 +127,8 @@ opencode run -m codearts/GLM-5.2 "hello"
 | `glm-5.3-flash`          | GLM-5.3-Flash        | opengw 下发       | ✅   | ❌   |
 | `deepseek-v4-pro-0813`   | DeepSeek-V4-Pro      | opengw 下发       | ✅   | ❌   |
 | `deepseek-v4.1-flash`    | DeepSeek-V4.1-Flash  | opengw 下发       | ✅   | ❌   |
+| `kimi-k3.1-pro`          | Kimi-K3.1-Pro        | agent-center 下发 | ✅   | ❌   |
+| `kimi-k3`                | Kimi-K3              | agent-center 下发 | ✅   | ❌   |
 
 模型清单**完全来自服务端下发**（agent-center + opengw 两个网关合并，见 `AGENTS.md`）。
 
@@ -140,22 +142,23 @@ opengw 来源的模型（deepseek-v4 系列 / glm-5.3）推理时自动附加 `m
 "plugin": [["file:///D:/code/huaweicode/codearts-provider", { "baseURL": "https://snap-access.cn-north-4.myhuaweicloud.com", "ak": "...", "sk": "..." }]]
 ```
 
-| 选项           | 默认值                                             | 说明                                       |
-| -------------- | -------------------------------------------------- | ------------------------------------------ |
-| `baseURL`      | `https://snap-access.cn-north-4.myhuaweicloud.com` | 服务 base URL                              |
-| `ak` / `sk`    | 环境变量 `CODEARTS_CLI_AK/SK`                      | 凭证（完整优先级链见[凭证](#凭证)）        |
-| `visionTool`   | `true`                                             | 是否注册 `codearts_vision` 工具            |
-| `visionModel`  | `Qwen3-VL-235B`                                    | 视觉工具使用的模型路由别名                 |
-| `autoCheckin`  | `true`                                             | 是否启用每日自动签到（后台静默，每天一次） |
+| 选项          | 默认值                                             | 说明                                       |
+| ------------- | -------------------------------------------------- | ------------------------------------------ |
+| `baseURL`     | `https://snap-access.cn-north-4.myhuaweicloud.com` | 服务 base URL                              |
+| `ak` / `sk`   | 环境变量 `CODEARTS_CLI_AK/SK`                      | 凭证（完整优先级链见[凭证](#凭证)）        |
+| `visionTool`  | `true`                                             | 是否注册 `codearts_vision` 工具            |
+| `visionModel` | `Qwen3-VL-235B`                                    | 视觉工具使用的模型路由别名                 |
+| `autoCheckin` | `true`                                             | 是否启用每日自动签到（后台静默，每天一次） |
 
 界面语言按 `CODEARTS_LANG` > `LC_ALL` > `LANG` 检测中文/英文（提示文案双语）。
 
 ## 故障排查
 
-**报错 `OpenAI Chat stream ended without finish_reason`**：这不是模型不可用，而是网关把错误包装成一行伪 SSE（`data:{"text":"[DONE]","error_code":...}`）后直接关流，AI SDK 因此报这个误导性错误。已实测到的两类触发原因：
+**报错 `OpenAI Chat stream ended without finish_reason`**：这个报错自 v1.2.1 起已被插件根除——网关把错误包装成一行伪 SSE（`data:{"text":"[DONE]","error_code":...}`）后直接关流，AI SDK 解析不到任何合法分片才会报这个误导性错误。插件的响应守卫（`utils/sse.ts`）现在会把这类伪 SSE 归一成**真实的非 2xx JSON 错误**（状态码取自 error_code 尾段，如 `81114.429` → 429），opencode 自己的限流退避重试和错误展示随即正常接管。已实测到的触发原因与处置：
 
-1. **账号级限流**（最常见）：`InferHub.ModelArts.81114.429 — Too many requests, the rate limit is 5000000 tokens per minute`。所有 CodeArts 模型共享每分钟 500 万 token 配额；1M 上下文模型（deepseek-v4 系列）连续多轮工具调用很容易触顶。**约 1 分钟后自动恢复**，重试即可。
-2. **请求体含 max-token 字段**（已在插件内修复）：`InferHub.001001005.400 The request param is invalid`。opencode v2.0.25 起会在请求体带 `max_completion_tokens`，InferHub 对该字段（以及 `max_tokens`）直接拒绝。插件的 `applyCliBodyShape` 现已剥离这些字段——若你仍遇到此错误，说明运行的 `dist/index.js` 过旧：`npm run build` 后重启 opencode。
+1. **账号级限流**（最常见）：`InferHub.ModelArts.81114.429 — Too many requests…`。所有 CodeArts 模型共享每分钟 500 万 token 配额；1M 上下文模型（deepseek-v4 系列）连续多轮工具调用很容易触顶。**约 1 分钟后自动恢复**；现在会看到真实的 429，opencode 内置重试会自动退避。
+2. **模型未注册**：`InferHub.002002009.404`。新模型灰度期间网关部分节点尚未注册（2026-10-30 的 kimi-k3.1-pro 即如此，注册完成后自愈），或请求体 model 用了显示名而非路由别名（`model_alias`）。现在会看到真实的 404 与清晰错误消息，等注册完成或改用别名即可。
+3. **请求体含 max-token 字段**（已在插件内修复）：`InferHub.001001005.400`。插件的 `applyCliBodyShape` 已剥离这些字段——若仍遇到，说明运行的 `dist/index.js` 过旧：`npm run build` 后重启 opencode。
 
 判断方法：直接跑 `node test/live-check.js`（带 `CODEARTS_CLI_AK/SK` 环境变量），看各模型是否正常返回。
 
