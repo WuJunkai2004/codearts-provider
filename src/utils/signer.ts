@@ -1,5 +1,6 @@
 import { createHmac, createHash } from "node:crypto";
 import { isOpengwModel } from "./opengw.js";
+import { guardChatResponse } from "./sse.js";
 
 const enc = encodeURIComponent;
 const rfc3986 = (s: string): string =>
@@ -138,7 +139,7 @@ export function applyCliBodyShape(bodyStr: string): {
     parsed = {};
   }
   const model = typeof parsed.model === "string" ? parsed.model : "";
-  // Hosts may inject max-token fields 
+  // Hosts may inject max-token fields
   // opencode v2.0.25 sends max_completion_tokens: <limit.output>`).
   // InferHub rejects both `max_completion_tokens` AND `max_tokens` with
   // `InferHub.001001005.400 The request param is invalid`.
@@ -257,7 +258,12 @@ export function createSignedFetch(
     }
 
     const signed = signRequest(method, url, ak, sk, outHeaders, bodyStr);
-    return fetch(input, { ...init, method, body, headers: signed });
+    const res = await fetch(input, { ...init, method, body, headers: signed });
+    // Normalize the gateway's pseudo-SSE error wrapping into a real non-2xx
+    // JSON error (host retry/backoff policy sees e.g. a true 429). Healthy
+    // streams pass through byte-identical.
+    if (isChat) return guardChatResponse(res);
+    return res;
   };
 }
 

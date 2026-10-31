@@ -17,7 +17,8 @@
  * and injects everything else.
  */
 
-import { signNativeRequest } from "../utils/signer.js";
+import { signNativeRequest, isChatCompletionsUrl } from "../utils/signer.js";
+import { guardChatResponse } from "../utils/sse.js";
 import { describeImage, imageToDataUrl } from "../utils/vision.js";
 import { autoCheckin } from "../utils/welfare.js";
 import { registerQuotaRpc } from "../utils/quota-panel.js";
@@ -39,6 +40,7 @@ import type {
   ConnectionInfo,
   CredentialValue,
   SessionHttpRequestEvent,
+  SessionHttpResponseEvent,
   V2Context,
 } from "./types.js";
 
@@ -156,6 +158,28 @@ export async function setup(ctx: V2Context): Promise<(() => void) | void> {
         creds.sk,
         event.sessionID,
       );
+    },
+    { providerID: PROVIDER_ID },
+  );
+
+  // Response counterpart: the gateway wraps pre-model failures (rate limit,
+  // model not registered, invalid params) as HTTP 200 + a single pseudo-SSE
+  // error line, which the SDK surfaces as the misleading "OpenAI Chat stream
+  // ended without finish_reason". Rewrite it into a real non-2xx JSON error
+  // (embedded status preserved, e.g. 429) so the host's retry/backoff and
+  // error rendering see a normal protocol shape. No retry here — policy
+  // belongs to the host.
+  await ctx.session?.hook?.(
+    "http.response",
+    async (event: SessionHttpRequestEvent | SessionHttpResponseEvent) => {
+      if (!("response" in event)) return;
+      if (event.model?.providerID !== PROVIDER_ID) return;
+      if (!isChatCompletionsUrl(event.request.url)) return;
+      try {
+        event.response = await guardChatResponse(event.response);
+      } catch {
+        // guard failures must never break the exchange
+      }
     },
     { providerID: PROVIDER_ID },
   );

@@ -16,12 +16,18 @@ export interface V2Context {
     readonly register?: (
       definition: {
         readonly id: string;
-        readonly methods: Record<string, { readonly input: unknown; readonly output: unknown }>;
+        readonly methods: Record<
+          string,
+          { readonly input: unknown; readonly output: unknown }
+        >;
         readonly events: Record<string, unknown>;
       },
       handlers: Record<
         string,
-        (input: unknown, context: { readonly signal: AbortSignal }) => Promise<unknown>
+        (
+          input: unknown,
+          context: { readonly signal: AbortSignal },
+        ) => Promise<unknown>
       >,
     ) => Promise<unknown>;
   };
@@ -49,8 +55,10 @@ export interface V2Context {
   };
   readonly session?: {
     readonly hook: (
-      name: "http.request",
-      callback: (event: SessionHttpRequestEvent) => Promise<void> | void,
+      name: "http.request" | "http.response",
+      callback: (
+        event: SessionHttpRequestEvent | SessionHttpResponseEvent,
+      ) => Promise<void> | void,
       options?: { readonly providerID?: string },
     ) => Promise<unknown>;
   };
@@ -114,6 +122,17 @@ export interface SessionHttpRequestEvent {
   readonly model: { readonly providerID: string; readonly id: string };
   readonly kind?: "primary" | "compaction" | "title" | "generate";
   request: Request;
+}
+
+/** Response counterpart (host ≥ 2026-08, sst/opencode #40327): `response`
+ * is mutable — replace it to rewrite the exchange's reply. */
+export interface SessionHttpResponseEvent {
+  readonly sessionID: string;
+  readonly agent?: string;
+  readonly model: { readonly providerID: string; readonly id: string };
+  readonly kind?: "primary" | "compaction" | "title" | "generate";
+  readonly request: Request;
+  response: Response;
 }
 
 export interface ConnectionInfo {
