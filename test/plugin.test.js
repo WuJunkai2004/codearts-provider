@@ -236,6 +236,30 @@ test("applyCliBodyShape strips host-injected max-token fields (InferHub 00100100
   assert.equal(body.store, false, "tolerated fields kept");
 });
 
+test("applyCliBodyShape echoes multimodal text parts as user_prompt", () => {
+  // Pasted images arrive as array content (text + image_url parts): the
+  // CLI's user_prompt echo is the JOINED TEXT PARTS, never the raw array
+  // and never an empty string.
+  const out = applyCliBodyShape(
+    JSON.stringify({
+      model: "glm-5.3-flash",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "这张图是什么？" },
+            { type: "image_url", image_url: { url: "data:image/png;base64,AA" } },
+          ],
+        },
+      ],
+    }),
+  );
+  const body = JSON.parse(out.body);
+  assert.equal(body.user_prompt, "这张图是什么？", "text parts joined");
+  // image parts pass through untouched for the natively multimodal models
+  assert.equal(body.messages[0].content[1].type, "image_url");
+});
+
 test("createSignedFetch leaves non-chat requests untouched", async (t) => {
   let captured = null;
   const realFetch = globalThis.fetch;

@@ -155,12 +155,26 @@ export function applyCliBodyShape(bodyStr: string): {
     lastUser && typeof lastUser === "object"
       ? ((lastUser as { content?: unknown }).content ?? "")
       : "";
+  // Multimodal turns carry an array of parts (text + image_url): echo the
+  // text parts joined, like the CLI does — an empty user_prompt is a
+  // different request shape than any the CLI ever sends.
   parsed.user_prompt =
     typeof parsed.user_prompt === "string"
       ? parsed.user_prompt
       : typeof lastText === "string"
         ? lastText
-        : "";
+        : Array.isArray(lastText)
+          ? lastText
+              .filter(
+                (p) =>
+                  p &&
+                  typeof p === "object" &&
+                  (p as { type?: string }).type === "text",
+              )
+              .map((p) => String((p as { text?: unknown }).text ?? ""))
+              .filter(Boolean)
+              .join("\n")
+          : "";
   return { body: JSON.stringify(parsed), model };
 }
 
