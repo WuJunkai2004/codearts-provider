@@ -6,7 +6,8 @@
 
 - 复刻 CodeArts CLI（agentkernel）的请求签名（华为云 APIG `SDK-HMAC-SHA256`）与请求形态，直连 InferHub 网关
 - 模型清单来自账号的 agent-center 动态下发，并合并 opengw 网关的 IDE 专属模型（deepseek-v4 / glm-5.3 等），带文件缓存兜底
-- 内置 `codearts_vision` 工具：主模型没有视觉能力时，用固定的视觉模型把图片转成文字
+- 多模态模型（`supports_images`）的图片直传聊天请求，不再借助外部视觉模型转文字
+- 服务端下发的思考挡位（`supported_thinking_strengths`）映射为 opencode 模型挡位（variants），选中即注入顶层 `reasoning_effort`
 - 内置每日自动签到（`USER_LOGIN` 每日签到领 1000 积分，benefit 模型的消耗额度），静默运行无需干预
 
 协议细节（签名算法、网关路由规则、端点清单）、代码结构与构建测试说明见 [AGENTS.md](AGENTS.md)。
@@ -65,11 +66,7 @@ opencode run -m codearts/openpangu-2.0-pro "hello"
 opencode run -m codearts/GLM-5.2 "hello"
 ```
 
-主模型无法看图时，直接在对话里给出图片路径，模型会自行调用 `codearts_vision`：
-
-```
-这张截图报什么错？test/fixtures/error.png
-```
+多模态模型（模型清单里"图片"列为 ✅ 的）直接在对话里贴图或给图片路径即可，图片原生随聊天请求发送，无需任何辅助工具。
 
 ## 模型缓存
 
@@ -78,28 +75,21 @@ opencode run -m codearts/GLM-5.2 "hello"
 - 发现失败时自动回退到缓存，插件照常可用
 - 缓存**不按时间过期**（模型清单变化很少，且每次启动都会尝试重新发现）；删除该文件即可强制重新发现
 
-## 视觉工具（`codearts_vision`）
+## 思考挡位（服务端下发，随网关变化）
 
-插件注册一个 LLM 工具 `codearts_vision`：内部把图片交给固定的视觉模型（默认 `Qwen3-VL-235B`，路由别名）转成文字，再把文字交给主模型。
+挡位的真实来源是独立端点 `POST /v1/model/thinking-variants`（`Agent-Type: PromptCenter`，请求体 `{model_names: [...]}`，与官方 CLI 的 `thinking-variants-service` 同一接口；agent-center 详情里的 `supported_thinking_strengths` 字段实践中恒为空，不是挡位来源）。插件把每一档映射为 opencode 的模型挡位（variant）：**选中某挡即在请求体注入顶层 `reasoning_effort`**——与官方 CLI 的变体机制同一线上格式。
 
-- **参数**：`image`（本地路径，相对路径按会话项目目录解析）/ `image_url`（远程 URL 或 `data:` URL）；`prompt` 可选，缺省为"详细描述这张图片"
-- 无凭据时调用会返回明确错误（提示 `/connect`），而不是静默失败
+当前网关下发（2026-11-25）：
 
-```jsonc
-// 关闭工具 / 换模型
-"plugin": [["file:///D:/code/huaweicode/codearts-provider", { "visionTool": false }]]
-"plugin": [["file:///D:/code/huaweicode/codearts-provider", { "visionModel": "Qwen3-VL-235B" }]]
-```
+| 挡位 | 模型 |
+| --- | --- |
+| `low` / `high` / `max` | deepseek-v4.1-flash-1017、glm-5.3-flash、deepseek-v4.1-flash、glm-5.3、kimi-k3.1-pro、kimi-k3 |
+| `high` / `max` | GLM-5.2、glm-5.2-sft-harmony |
+| 无挡位 | openpangu-2.1-pro、openpangu-2.0-pro、openpangu-2.0-flash、speed（智速模式） |
 
-> 用 `/connect` 添加凭据后需**重启 opencode**，工具才会随进程重新注册（同 `opencode.json` 改动）。
-
-### 局限：贴图无法交给工具
-
-**直接在对话框粘贴/拖拽图片不支持。** 这类图片主模型读不了，工具调用也拿不到字节。目前可行的用法是**提供图片路径或 URL**：
-
-```
-这张截图报什么错？C:\Users\me\Pictures\error.png
-```
+- 网关下发哪些挡位，模型就出现哪些挡位；端点未返回（如 openpangu 系列）则不显示——以网关为准，不做本地默认
+- 挡位清单变化后，60 秒内的后台刷新会触发 provider reload
+- `default_strength` 不消费（官方 CLI 同样忽略；其选单里的 "Default" 就是无挡位的基础模型）
 
 ## 每日签到（自动，非工具）
 
@@ -114,23 +104,24 @@ opencode run -m codearts/GLM-5.2 "hello"
 "plugin": [["file:///D:/code/huaweicode/codearts-provider", { "autoCheckin": false }]]
 ```
 
-## 模型清单（2026-09/10 实测）
+## 模型清单（2026-11 实测）
 
-| 模型 ID（= model_alias） | 显示名（model_name） | 来源              | 文本 | 图片 |
-| ------------------------ | -------------------- | ----------------- | ---- | ---- |
-| `openpangu-2.0-pro`      | OpenPangu-2.0-Pro    | agent-center 下发 | ✅   | ❌   |
-| `openpangu-2.0-flash`    | OpenPangu-2.0-Flash  | agent-center 下发 | ✅   | ❌   |
-| `GLM-5.2`                | GLM-5.2              | agent-center 下发 | ✅   | ❌   |
-| `glm-5.2-sft-harmony`    | GLM-5.2-ArkTS-SPARK  | agent-center 下发 | ✅   | ❌   |
-| `Qwen3-VL-235B`          | Qwen3-VL-235B        | agent-center 下发 | ✅   | ✅   |
-| `deepseek-v4-flash-0731` | DeepSeek-V4-Flash    | opengw 下发       | ✅   | ❌   |
-| `glm-5.3-flash`          | GLM-5.3-Flash        | opengw 下发       | ✅   | ❌   |
-| `deepseek-v4-pro-0813`   | DeepSeek-V4-Pro      | opengw 下发       | ✅   | ❌   |
-| `deepseek-v4.1-flash`    | DeepSeek-V4.1-Flash  | opengw 下发       | ✅   | ❌   |
-| `kimi-k3.1-pro`          | Kimi-K3.1-Pro        | agent-center 下发 | ✅   | ❌   |
-| `kimi-k3`                | Kimi-K3              | agent-center 下发 | ✅   | ❌   |
+| 模型 ID（= model_alias） | 显示名（model_name） | 来源              | 文本 | 图片 | 思考挡位 |
+| ------------------------ | -------------------- | ----------------- | ---- | ---- | -------- |
+| `deepseek-v4.1-flash-1017` | DeepSeek-V4.1-Flash-1017 | agent-center 下发 | ✅ | ✅ | low/high/max |
+| `glm-5.3-flash`          | GLM-5.3-Flash        | agent-center 下发 | ✅   | ✅   | low/high/max |
+| `deepseek-v4.1-flash`    | DeepSeek-V4.1-Flash  | agent-center 下发 | ✅   | ✅   | low/high/max |
+| `glm-5.3`                | GLM-5.3              | agent-center 下发 | ✅   | ❌   | low/high/max |
+| `kimi-k3.1-pro`          | Kimi-K3.1-Pro        | agent-center 下发 | ✅   | ✅   | low/high/max |
+| `kimi-k3`                | Kimi-K3              | agent-center 下发 | ✅   | ✅   | low/high/max |
+| `GLM-5.2`                | GLM-5.2              | agent-center 下发 | ✅   | ❌   | high/max |
+| `glm-5.2-sft-harmony`    | GLM-5.2-ArkTS-SPARK  | agent-center 下发 | ✅   | ❌   | high/max |
+| `openpangu-2.1-pro`      | OpenPangu-2.1-Pro    | agent-center 下发 | ✅   | ❌   | — |
+| `openpangu-2.0-pro`      | OpenPangu-2.0-Pro    | agent-center 下发 | ✅   | ❌   | — |
+| `openpangu-2.0-flash`    | OpenPangu-2.0-Flash  | agent-center 下发 | ✅   | ❌   | — |
+| `speed`                  | 智速模式              | agent-center 下发 | ✅   | ❌   | — |
 
-模型清单**完全来自服务端下发**（agent-center + opengw 两个网关合并，见 `AGENTS.md`）。
+模型清单**完全来自服务端下发**（agent-center + opengw 两个网关合并，见 `AGENTS.md`）。"思考挡位"列来自 `POST /v1/model/thinking-variants` 端点（见[思考挡位](#思考挡位服务端下发随网关变化)）——网关下发变化后 60 秒内自动生效，无需改插件。
 
 opengw 来源的模型（deepseek-v4 系列 / glm-5.3）推理时自动附加 `maas_type: benefit` 头，消耗签到所得的通用积分；积分不足或当日未签到可能影响这些模型的可用额度。
 
@@ -146,8 +137,6 @@ opengw 来源的模型（deepseek-v4 系列 / glm-5.3）推理时自动附加 `m
 | ------------- | -------------------------------------------------- | ------------------------------------------ |
 | `baseURL`     | `https://snap-access.cn-north-4.myhuaweicloud.com` | 服务 base URL                              |
 | `ak` / `sk`   | 环境变量 `CODEARTS_CLI_AK/SK`                      | 凭证（完整优先级链见[凭证](#凭证)）        |
-| `visionTool`  | `true`                                             | 是否注册 `codearts_vision` 工具            |
-| `visionModel` | `Qwen3-VL-235B`                                    | 视觉工具使用的模型路由别名                 |
 | `autoCheckin` | `true`                                             | 是否启用每日自动签到（后台静默，每天一次） |
 
 界面语言按 `CODEARTS_LANG` > `LC_ALL` > `LANG` 检测中文/英文（提示文案双语）。
