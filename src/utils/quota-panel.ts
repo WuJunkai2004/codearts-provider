@@ -11,8 +11,10 @@
  *   { label: string, groups: [{ title, bar, resetTime? }] }
  *
  * where `bar` is "nn%" or "xx/yy" (the reader derives fill/color from it)
- * and `title` / `resetTime` are display-ready strings — THIS side owns
- * i18n. Handlers are best-effort: any failure degrades to an empty group
+ * and `title` is display-ready — THIS side owns i18n. `resetTime` is raw
+ * Unix epoch MILLISECONDS (the reader renders the countdown + clock line
+ * itself against its own now, so a cached absolute timestamp never goes
+ * stale). Handlers are best-effort: any failure degrades to an empty group
  * list, which the reader renders as "no data for this provider" (the GLM
  * view falls back). A 4-min result cache absorbs the panel's 30s polling
  * (the official CLI itself polls statistics/plugin every 10 min).
@@ -42,7 +44,8 @@ import { detectLangZH } from "./i18n.js";
 export interface QuotaPanelGroup {
   readonly title: string;
   readonly bar: string;
-  readonly resetTime?: string;
+  /** Raw Unix epoch ms — the wire contract (the reader renders it). */
+  readonly resetTime?: number;
 }
 
 /** The `status` method output — the cross-plugin contract. */
@@ -220,16 +223,15 @@ export function groupsFromSubscription(
   langZH = detectLangZH(),
 ): QuotaPanelGroup[] {
   if (!info) return [];
-  const groups: { title: string; bar: string; resetTime?: string }[] = [];
+  const groups: { title: string; bar: string; resetTime?: number }[] = [];
 
   // Cycle end lives at the TOP level of the response (2026-10-14 finding;
-  // `package.end_date` does not exist in the real payload).
-  const expiry = typeof info.end_date === "string" ? info.end_date.trim() : "";
-  const expiryLine = expiry
-    ? langZH
-      ? `到期: ${expiry}`
-      : `Expires: ${expiry}`
-    : undefined;
+  // `package.end_date` does not exist in the real payload). It goes on the
+  // wire as raw Unix epoch ms — the reader renders the countdown + clock
+  // line itself. "YYYY-MM-DD" parses as UTC midnight; unparseable → no
+  // reset line.
+  const expiryRaw = typeof info.end_date === "string" ? info.end_date.trim() : "";
+  const expiry = expiryRaw ? Date.parse(expiryRaw) : NaN;
 
   // Token package: render only when the account actually HAS one. A
   // placeholder total (≤1) or an explicit credit package means there is no
@@ -269,8 +271,8 @@ export function groupsFromSubscription(
 
   // The cycle end qualifies the first statistics group (package if present,
   // else credits).
-  if (expiryLine && groups.length > 0 && !groups[0].resetTime) {
-    groups[0].resetTime = expiryLine;
+  if (Number.isFinite(expiry) && groups.length > 0 && !groups[0].resetTime) {
+    groups[0].resetTime = expiry;
   }
 
   return groups;

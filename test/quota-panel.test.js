@@ -280,7 +280,7 @@ function trialCreditResponse() {
 test("groupsFromSubscription: token package first, then credits", () => {
   const groups = groupsFromSubscription(subscriptionResponse(), true);
   assert.deepEqual(groups, [
-    { title: "套餐额度", bar: "2.5M/10.0M", resetTime: "到期: 2026-11-01" },
+    { title: "套餐额度", bar: "2.5M/10.0M", resetTime: Date.parse("2026-11-01") },
     { title: "通用积分", bar: "1200/5000" },
   ]);
 });
@@ -291,7 +291,7 @@ test("groupsFromSubscription: english titles + expiry line", () => {
     groups.map((g) => g.title),
     ["Package", "Credits"],
   );
-  assert.equal(groups[0].resetTime, "Expires: 2026-11-01");
+  assert.equal(groups[0].resetTime, Date.parse("2026-11-01"));
 });
 
 test("groupsFromSubscription: credit-package account (体验版) has NO token bar", () => {
@@ -299,7 +299,7 @@ test("groupsFromSubscription: credit-package account (体验版) has NO token ba
   // usage — rendering the pair was the "9.8M/1" bug. Credits carry the quota.
   const groups = groupsFromSubscription(trialCreditResponse(), true);
   assert.deepEqual(groups, [
-    { title: "通用积分", bar: "842/16.6K", resetTime: "到期: 2026-10-18" },
+    { title: "通用积分", bar: "842/16.6K", resetTime: Date.parse("2026-10-18") },
   ]);
 });
 
