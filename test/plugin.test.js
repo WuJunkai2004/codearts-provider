@@ -325,7 +325,7 @@ test("discoverModels maps gpts.models into provider models", async (t) => {
               model_parameters: {
                 context_window: 202752,
                 max_tokens: 131072,
-                thinking_type: 1,
+                supported_thinking_strengths: ["low", "high", "low", 42],
                 supports_images: false,
               },
             },
@@ -334,6 +334,18 @@ test("discoverModels maps gpts.models into provider models", async (t) => {
               model_parameters: { display_enabled: false },
             },
           ],
+        },
+      });
+    }
+    if (url.includes("thinking-variants")) {
+      assert.equal(
+        url.includes("/v1/model/thinking-variants"),
+        true,
+        "gears endpoint",
+      );
+      return Response.json({
+        variants: {
+          "GLM-5.2": { strengths: ["high", "max"], default_strength: "high" },
         },
       });
     }
@@ -347,11 +359,122 @@ test("discoverModels maps gpts.models into provider models", async (t) => {
   });
 
   const models = await discoverModels(AK, SK, "https://example.com");
-  assert.equal(calls, 3);
+  assert.equal(calls, 4, "useragents + detail + thinking-variants + opengw");
   assert.equal(models.length, 1);
   assert.equal(models[0].id, "GLM-5.2");
   assert.equal(models[0].context, 202752);
   assert.equal(models[0].reasoning, true);
+  assert.deepEqual(
+    models[0].thinkingLevels,
+    ["high", "max"],
+    "gears from POST /v1/model/thinking-variants",
+  );
+});
+
+test("discoverModels maps thinking_type legacy flag and empty strengths", async (t) => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("useragents")) {
+      return Response.json({
+        agents: [{ agent_id: "ag1", supported_clients: ["CLI"] }],
+      });
+    }
+    if (url.includes("agents/detail")) {
+      return Response.json({
+        gpts: {
+          models: [
+            {
+              model_name: "Legacy",
+              model_alias: "legacy",
+              model_parameters: {
+                thinking_type: 1,
+                supported_thinking_strengths: [],
+              },
+            },
+            {
+              model_name: "Plain",
+              model_alias: "plain",
+              model_parameters: { thinking_type: null },
+            },
+          ],
+        },
+      });
+    }
+    if (url.includes("thinking-variants")) {
+      return Response.json({
+        variants: { plain: { strengths: ["low", "high"] } },
+      });
+    }
+    if (url.includes("gateway/config")) {
+      return Response.json({ result: { models: [] } });
+    }
+    throw new Error("unexpected url " + url);
+  };
+  t.after(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  const models = await discoverModels(AK, SK, "https://example.com");
+  assert.equal(models.length, 2);
+  const legacy = models.find((m) => m.id === "legacy");
+  assert.equal(
+    legacy.reasoning,
+    true,
+    "thinking_type fallback still marks reasoning",
+  );
+  assert.equal(
+    legacy.thinkingLevels,
+    undefined,
+    "no endpoint entry = no gears",
+  );
+  const plain = models.find((m) => m.id === "plain");
+  assert.equal(plain.reasoning, true, "endpoint gears imply reasoning");
+  assert.deepEqual(plain.thinkingLevels, ["low", "high"]);
+});
+
+test("discoverModels survives thinking-variants failures (gears are best-effort)", async (t) => {
+  const realFetch = globalThis.fetch;
+  const errors = [];
+  const origError = console.error;
+  console.error = (...args) => errors.push(args);
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("useragents")) {
+      return Response.json({
+        agents: [{ agent_id: "ag1", supported_clients: ["CLI"] }],
+      });
+    }
+    if (url.includes("agents/detail")) {
+      return Response.json({
+        gpts: {
+          models: [
+            {
+              model_name: "GLM-5.2",
+              model_alias: "GLM-5.2",
+              model_parameters: { context_window: 202752 },
+            },
+          ],
+        },
+      });
+    }
+    if (url.includes("thinking-variants")) {
+      return new Response('{"error":"boom"}', { status: 500 });
+    }
+    if (url.includes("gateway/config")) {
+      return Response.json({ result: { models: [] } });
+    }
+    throw new Error("unexpected url " + url);
+  };
+  t.after(() => {
+    globalThis.fetch = realFetch;
+    console.error = origError;
+  });
+
+  const models = await discoverModels(AK, SK, "https://example.com");
+  assert.equal(models.length, 1, "models survive the gears failure");
+  assert.equal(models[0].thinkingLevels, undefined, "no gears on failure");
+  assert.ok(errors.length > 0, "failure logged");
 });
 
 test("plugin module default-exports V1 shape { id, server }", async () => {
@@ -938,6 +1061,29 @@ test("codearts_vision reports gateway errors", async (t) => {
       ),
     /HTTP 400.*not registered/s,
   );
+});
+
+test("V2: toModelInfo maps thinking strengths into reasoning_effort variants", () => {
+  const info = toModelInfo({
+    id: "GLM-5.2",
+    name: "GLM-5.2",
+    context: 202752,
+    output: 65536,
+    images: false,
+    reasoning: true,
+    thinkingLevels: ["low", "high"],
+  });
+  assert.deepEqual(
+    info.variants,
+    [
+      { id: "low", body: { reasoning_effort: "low" } },
+      { id: "high", body: { reasoning_effort: "high" } },
+    ],
+    "each server-advertised strength becomes a variant injecting top-level reasoning_effort",
+  );
+  // must survive a structured clone (no functions/symbols anywhere)
+  const clone = JSON.parse(JSON.stringify(info));
+  assert.deepEqual(clone, info);
 });
 
 test("V2: toModelInfo matches the V2 Model.Info shape", () => {

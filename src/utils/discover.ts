@@ -10,6 +10,10 @@ export type DiscoveredModel = {
   context?: number;
   output?: number;
   reasoning?: boolean;
+  /** Server-advertised thinking gears (`supported_thinking_strengths`),
+   * normalized to strings and deduped, order preserved. Empty when the
+   * gateway offers none. */
+  thinkingLevels?: string[];
   images?: boolean;
   apiUrl?: string;
   /** true if discovered via the opengw gateway — inference needs
@@ -60,6 +64,26 @@ export function pickAgentId(
   return undefined;
 }
 
+/** Normalizes the gateway's `supported_thinking_strengths` (strings or
+ * numbers, possibly sloppy) into clean string levels: trimmed, deduped,
+ * order preserved. The gateway list is the truth — no local defaults. */
+export function normalizeThinkingLevels(
+  raw: unknown,
+): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const levels: string[] = [];
+  for (const value of raw) {
+    const level =
+      typeof value === "string"
+        ? value.trim()
+        : value !== null && typeof value === "object"
+          ? String((value as { value?: unknown }).value ?? "").trim()
+          : String(value).trim();
+    if (level && !levels.includes(level)) levels.push(level);
+  }
+  return levels;
+}
+
 export async function discoverModels(
   ak: string,
   sk: string,
@@ -79,7 +103,75 @@ export async function discoverModels(
       (e as Error)?.message ?? e,
     );
   }
+  // Thinking gears come from their own endpoint, NOT from the agent-center
+  // detail (whose `supported_thinking_strengths` is empty in practice — the
+  // official CLI reads them via POST /v1/model/thinking-variants too).
+  // Best-effort: a failure costs the gears but never the models.
+  try {
+    const levels = await fetchThinkingVariants(
+      ak,
+      sk,
+      base,
+      models.map((m) => m.id),
+    );
+    for (const m of models) {
+      const strengths = levels[m.id];
+      if (strengths && strengths.length > 0) {
+        m.thinkingLevels = strengths;
+        m.reasoning = true;
+      }
+    }
+  } catch (e) {
+    console.error(
+      "[codearts-provider] thinking-variants discovery failed:",
+      (e as Error)?.message ?? e,
+    );
+  }
   return models;
+}
+
+/** The thinking-gear source of truth: POST `/v1/model/thinking-variants`
+ * (`Agent-Type: PromptCenter`, plain signed call — no CLI chat shape).
+ * Body `{ model_names: [...] }` (≤50 names, the official client's batch
+ * cap); response `{ variants: { <model_alias>: { strengths: string[],
+ * default_strength: string } } }`. Models missing from the response (or
+ * with empty strengths) have no gears. `default_strength` is NOT consumed —
+ * the official CLI ignores it too ("Default" in its picker is the base
+ * model without any variant). */
+export async function fetchThinkingVariants(
+  ak: string,
+  sk: string,
+  base: string,
+  modelNames: string[],
+): Promise<Record<string, string[]>> {
+  if (modelNames.length === 0) return {};
+  const doFetch = createSignedFetch(ak, sk);
+  const res = await doFetch(`${base}/v1/model/thinking-variants`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Language": "zh-cn",
+      "Agent-Type": "PromptCenter",
+    },
+    body: JSON.stringify({ model_names: modelNames.slice(0, 50) }),
+  });
+  if (!res.ok)
+    throw new Error(
+      `thinking-variants failed: HTTP ${res.status} ${await res.text()}`,
+    );
+  const json = {
+    variants: {} as Record<string, { strengths?: unknown }>,
+  };
+  const parsed = (await res.json()) as {
+    variants?: Record<string, { strengths?: unknown }>;
+  };
+  if (parsed?.variants) json.variants = parsed.variants;
+  const out: Record<string, string[]> = {};
+  for (const [name, entry] of Object.entries(json.variants)) {
+    const strengths = normalizeThinkingLevels(entry?.strengths) ?? [];
+    out[name] = strengths;
+  }
+  return out;
 }
 
 /** Primary source: the agent-center model list on the snap-access gateway
@@ -152,6 +244,9 @@ async function discoverAgentCenter(
         description: p.model_desc_en ?? p.model_desc ?? "",
         context: p.context_window ?? p.truncate_length ?? 131072,
         output: p.max_tokens ?? 32768,
+        // thinking_type is null on the current gateway and kept only as a
+        // reasoning-flag fallback for older payloads; real gears come from
+        // fetchThinkingVariants (see discoverModels).
         reasoning:
           p.thinking_type != null &&
           p.thinking_type !== "" &&

@@ -100,6 +100,11 @@ export type ConfigModel = NonNullable<
  * The V1 `toModel()` shape (api/capabilities objects) does not validate in a
  * real V2 host: capabilities carry input/output modality ARRAYS here, `modelID`
  * is required, cost is an array of tiers, and `enabled`/`time` are mandatory.
+ *
+ * Thinking gears ride the variants: each server-advertised strength becomes a
+ * user-selectable variant that injects a TOP-LEVEL `reasoning_effort` into the
+ * request body (the field the gateway's gear control actually reads — mirrors
+ * the official CLI's variants → `reasoningEffort` → body field).
  */
 export function toModelInfo(m: DiscoveredModel): Record<string, unknown> {
   return {
@@ -112,7 +117,10 @@ export function toModelInfo(m: DiscoveredModel): Record<string, unknown> {
       input: m.images ? ["text", "image"] : ["text"],
       output: ["text"],
     },
-    variants: [],
+    variants: (m.thinkingLevels ?? []).map((level) => ({
+      id: level,
+      body: { reasoning_effort: level },
+    })),
     time: { released: 0 },
     cost: [{ input: 0, output: 0, cache: { read: 0, write: 0 } }],
     status: "active",
