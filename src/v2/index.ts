@@ -18,7 +18,10 @@
  */
 
 import { signNativeRequest, isChatCompletionsUrl } from "../utils/signer.js";
-import { guardChatResponse } from "../utils/sse.js";
+import {
+  guardChatResponse,
+  isInferHubModerationError,
+} from "../utils/sse.js";
 import { describeImage, imageToDataUrl } from "../utils/vision.js";
 import { autoCheckin } from "../utils/welfare.js";
 import { registerQuotaRpc } from "../utils/quota-panel.js";
@@ -41,6 +44,7 @@ import type {
   CredentialValue,
   SessionHttpRequestEvent,
   SessionHttpResponseEvent,
+  SessionRetryEvent,
   V2Context,
 } from "./types.js";
 
@@ -171,8 +175,7 @@ export async function setup(ctx: V2Context): Promise<(() => void) | void> {
   // belongs to the host.
   await ctx.session?.hook?.(
     "http.response",
-    async (event: SessionHttpRequestEvent | SessionHttpResponseEvent) => {
-      if (!("response" in event)) return;
+    async (event: SessionHttpResponseEvent) => {
       if (event.model?.providerID !== PROVIDER_ID) return;
       if (!isChatCompletionsUrl(event.request.url)) return;
       try {
@@ -180,6 +183,29 @@ export async function setup(ctx: V2Context): Promise<(() => void) | void> {
       } catch {
         // guard failures must never break the exchange
       }
+    },
+    { providerID: PROVIDER_ID },
+  );
+
+  // Retry policy (docs/build/plugins/server → "Retry policy"): the host
+  // classifies provider failures and the moderation family lands on
+  // terminal classes (403 → AuthenticationError, 400 → InvalidRequestError).
+  // But the gateway's wrapped `InferHub.ModelArts.81xxx` rejections are a
+  // KNOWN-FLAKY backend content-moderation family in practice (81011.403
+  // text refusal, 81001.400 "image_url.url field is unsafe" — 2026-11-07:
+  // retry usually succeeds), so upgrade exactly those to a retryable
+  // decision. Real account problems (APIG signature failures, also 403) and
+  // deterministic rejections (001001005.400 invalid params, 002002009.404
+  // not registered) never match the family and stay terminal; a proposed
+  // retry (rate limits) keeps its own delay, and the host's built-in
+  // attempt cap still bounds this.
+  await ctx.session?.hook?.(
+    "retry",
+    async (event: SessionRetryEvent) => {
+      if (event.model?.providerID !== PROVIDER_ID) return;
+      if (event.decision.retry) return;
+      if (!isInferHubModerationError(event.error?.message ?? "")) return;
+      event.decision = { retry: true, delay: 2_000 };
     },
     { providerID: PROVIDER_ID },
   );

@@ -54,13 +54,23 @@ export interface V2Context {
     readonly transform: (cb: (editor: ToolEditor) => void) => Promise<unknown>;
   };
   readonly session?: {
-    readonly hook: (
-      name: "http.request" | "http.response",
-      callback: (
-        event: SessionHttpRequestEvent | SessionHttpResponseEvent,
-      ) => Promise<void> | void,
-      options?: { readonly providerID?: string },
-    ) => Promise<unknown>;
+    readonly hook: {
+      (
+        name: "http.request",
+        callback: (event: SessionHttpRequestEvent) => Promise<void> | void,
+        options?: { readonly providerID?: string },
+      ): Promise<unknown>;
+      (
+        name: "http.response",
+        callback: (event: SessionHttpResponseEvent) => Promise<void> | void,
+        options?: { readonly providerID?: string },
+      ): Promise<unknown>;
+      (
+        name: "retry",
+        callback: (event: SessionRetryEvent) => Promise<void> | void,
+        options?: { readonly providerID?: string },
+      ): Promise<unknown>;
+    };
   };
 }
 
@@ -133,6 +143,25 @@ export interface SessionHttpResponseEvent {
   readonly kind?: "primary" | "compaction" | "title" | "generate";
   readonly request: Request;
   response: Response;
+}
+
+/** Retry-policy hook (docs/build/plugins/server → "Retry policy"): runs
+ * after the host classified a provider failure and proposed its policy,
+ * before any retry is scheduled. `decision` is mutable — setting it makes a
+ * terminal failure retryable or vetoes a proposed retry; the host's built-in
+ * maximum attempt count still bounds forced retries. `attempt` is the
+ * physical attempt under consideration (initial request = 1). */
+export interface SessionRetryEvent {
+  readonly sessionID: string;
+  readonly agent?: string;
+  readonly model: { readonly providerID: string; readonly id: string };
+  readonly error: {
+    readonly type: string;
+    readonly message: string;
+    readonly status?: number;
+  };
+  readonly attempt: number;
+  decision: { retry: false } | { retry: true; delay: number };
 }
 
 export interface ConnectionInfo {

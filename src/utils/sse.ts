@@ -50,6 +50,20 @@ export function sseErrorMessage(e: SseError): string {
   return `CodeArts InferHub error ${e.code}${e.msg ? `: ${e.msg}` : ""}`;
 }
 
+/** Recognizes messages this module itself produced for gateway-wrapped
+ * backend content-moderation errors: the `InferHub.ModelArts.81xxx` family.
+ * Observed members are both known-flaky rejections where a retry usually
+ * succeeds (2026-11-07): `81011.403` text-refusal misfires and `81001.400`
+ * "the content of image_url.url field is unsafe" image misfires. Gateway-
+ * and app-level failures (APIG signature, TM session slots) and deterministic
+ * rejections (`001001005.400` invalid params, `002002009.404` not registered)
+ * never match, so they stay terminal. A wrapped `81114.429` also matches the
+ * pattern, but rate limits already arrive with a host-proposed retry, so the
+ * retry hook's early return keeps the host's own backoff. */
+export function isInferHubModerationError(message: string): boolean {
+  return /CodeArts InferHub error InferHub\.ModelArts\.81\d{3}\./.test(message);
+}
+
 /** Replays already-peeked bytes, then pumps the remainder unchanged. */
 function replayStream(
   peeked: Uint8Array[],

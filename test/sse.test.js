@@ -4,6 +4,7 @@ import {
   extractSseError,
   statusFromSseError,
   sseErrorMessage,
+  isInferHubModerationError,
   guardChatResponse,
 } from "../.tsc/utils/sse.js";
 import { createSignedFetch } from "../.tsc/utils/signer.js";
@@ -73,6 +74,53 @@ test("sseErrorMessage includes code and msg", () => {
     msg,
     /^CodeArts InferHub error InferHub\.ModelArts\.81114\.429: Too many requests$/,
   );
+});
+
+test("isInferHubModerationError: ModelArts 81xxx moderation family matches", () => {
+  assert.equal(
+    isInferHubModerationError(
+      "CodeArts InferHub error InferHub.ModelArts.81011.403: 抱歉，我无法提供关于您提问内容的建议。",
+    ),
+    true,
+    "flaky text-refusal 403 — retryable per policy",
+  );
+  assert.equal(
+    isInferHubModerationError(
+      "CodeArts InferHub error InferHub.ModelArts.81001.400: the content of image_url.url field is unsafe",
+    ),
+    true,
+    "flaky image-moderation 400 — retryable per policy",
+  );
+});
+
+test("isInferHubModerationError: gateway-level and deterministic failures do not match", () => {
+  assert.equal(
+    isInferHubModerationError("APIG.0301 decrypt token fail"),
+    false,
+    "real auth failure stays terminal",
+  );
+  assert.equal(
+    isInferHubModerationError(
+      "CodeArts InferHub error TM.00001041: 并发会话数已达上限",
+    ),
+    false,
+    "session-slot limit is not moderation",
+  );
+  assert.equal(
+    isInferHubModerationError(
+      "CodeArts InferHub error InferHub.001001005.400: The request param is invalid",
+    ),
+    false,
+    "deterministic invalid params stay terminal",
+  );
+  assert.equal(
+    isInferHubModerationError(
+      "CodeArts InferHub error InferHub.002002009.404: not registered",
+    ),
+    false,
+    "not-registered stays terminal",
+  );
+  assert.equal(isInferHubModerationError(""), false);
 });
 
 test("guardChatResponse: pseudo-SSE rate limit error → real 429 JSON error", async () => {
