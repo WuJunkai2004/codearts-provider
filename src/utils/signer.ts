@@ -227,8 +227,8 @@ export function createSignedFetch(
   sk: string,
   options: { sessionId?: string } = {},
 ) {
-  // Callers that must not share a session slot (e.g. the vision tool) pass an
-  // explicit id: the server counts concurrent sessions by user-session-id.
+  // Callers that must not share a session slot pass an explicit id: the
+  // server counts concurrent sessions by user-session-id.
   const sessionId = options.sessionId ?? randomSessionId();
   return async (
     input: RequestInfo | URL,

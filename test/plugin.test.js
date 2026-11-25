@@ -8,7 +8,6 @@ import {
   applyCliBodyShape,
 } from "../.tsc/utils/signer.js";
 import { discoverModels, pickAgentId } from "../.tsc/utils/discover.js";
-import { extractContent, imageToDataUrl } from "../.tsc/utils/vision.js";
 import { readModelCache, writeModelCache } from "../.tsc/utils/cache.js";
 import { toModelInfo } from "../.tsc/utils/models.js";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -867,7 +866,7 @@ test("empty discovery does not poison the cache with hardcoded models", async (t
   );
 });
 
-test("createSignedFetch accepts an explicit sessionId (vision slot isolation)", async (t) => {
+test("createSignedFetch accepts an explicit sessionId (session slot isolation)", async (t) => {
   let captured = null;
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (input, init) => {
@@ -879,188 +878,14 @@ test("createSignedFetch accepts an explicit sessionId (vision slot isolation)", 
   });
 
   const signedFetch = createSignedFetch(AK, SK, {
-    sessionId: "ses_vision_fixed",
+    sessionId: "ses_fixed_slot",
   });
   await signedFetch("https://example.com/api/v2/chat/completions", {
     method: "POST",
-    body: JSON.stringify({ model: "Qwen3-VL-235B", messages: [] }),
+    body: JSON.stringify({ model: "GLM-5.2", messages: [] }),
   });
-  assert.equal(captured.init.headers["user-session-id"], "ses_vision_fixed");
-  assert.equal(captured.init.headers["x-ot-session-id"], "ses_vision_fixed");
-});
-
-test("extractContent parses SSE deltas and plain JSON", () => {
-  const sse = [
-    'data: {"choices":[{"delta":{"content":"红色"}}]}',
-    'data: {"choices":[{"delta":{"content":"的圆"}}]}',
-    "data: [DONE]",
-  ].join("\n");
-  assert.equal(extractContent(sse, "text/event-stream"), "红色的圆");
-
-  const json = JSON.stringify({ choices: [{ message: { content: "hello" } }] });
-  assert.equal(extractContent(json, "application/json"), "hello");
-
-  assert.equal(extractContent("garbage", null), "");
-  assert.equal(extractContent('{"choices":[]}', "application/json"), "");
-});
-
-test("imageToDataUrl encodes local file with mime from extension", () => {
-  const png = join(FAKE_HOME, "tiny.png");
-  writeFileSync(png, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
-  const url = imageToDataUrl(png);
-  assert.match(url, /^data:image\/png;base64,/);
-  assert.equal(Buffer.from(url.split(",")[1], "base64").length, 4);
-
-  const jpg = join(FAKE_HOME, "tiny.JPG");
-  writeFileSync(jpg, Buffer.from([0xff, 0xd8]));
-  assert.match(
-    imageToDataUrl(jpg),
-    /^data:image\/jpeg;base64,/,
-    "extension match is case-insensitive",
-  );
-});
-
-test("codearts_vision tool is registered by default and disabled via visionTool:false", async () => {
-  const mod = await import("../dist/index.js?vision-tool");
-  const hooks = await mod.default.server({}, {});
-  assert.ok(hooks.tool, "tool hook present by default");
-  const def = hooks.tool["codearts_vision"];
-  assert.ok(def, "codearts_vision registered");
-  assert.equal(typeof def.execute, "function");
-  assert.ok(def.args.image, "image arg");
-  assert.ok(def.args.image_url, "image_url arg");
-  assert.ok(def.args.prompt, "prompt arg");
-
-  const off = await mod.default.server({}, { visionTool: false });
-  assert.equal(
-    off.tool,
-    undefined,
-    "visionTool:false removes the tool hook entirely",
-  );
-});
-
-test("codearts_vision executes against the gateway and returns text", async (t) => {
-  const realFetch = globalThis.fetch;
-  let captured = null;
-  globalThis.fetch = async (input, init) => {
-    captured = { url: String(input), init };
-    return new Response(
-      'data: {"choices":[{"delta":{"content":"A small red circle."}}]}\n\ndata: [DONE]\n',
-      { status: 200, headers: { "content-type": "text/event-stream" } },
-    );
-  };
-  t.after(() => {
-    globalThis.fetch = realFetch;
-  });
-
-  const png = join(FAKE_HOME, "shot.png");
-  writeFileSync(png, Buffer.from([1, 2, 3, 4]));
-
-  const mod = await import("../dist/index.js?vision-exec");
-  const hooks = await mod.default.server(
-    {},
-    { ak: "TESTAK", sk: "TESTSK", baseURL: "https://example.com" },
-  );
-  const res = await hooks.tool["codearts_vision"].execute(
-    { image: png, prompt: "What is this?" },
-    { directory: FAKE_HOME, abort: undefined },
-  );
-
-  assert.equal(captured.url, "https://example.com/api/v2/chat/completions");
-  const h = captured.init.headers;
-  assert.equal(h["model-id"], "Qwen3-VL-235B", "default vision model");
-  assert.equal(
-    h["User-Agent"],
-    "ai-sdk/provider-utils/4.0.21 runtime/bun/1.3.14",
-    "CLI shape",
-  );
-  assert.match(h.Authorization, /^SDK-HMAC-SHA256 Access=TESTAK/);
-
-  const body = JSON.parse(captured.init.body);
-  assert.equal(body.model, "Qwen3-VL-235B");
-  assert.equal(body.user_prompt, "What is this?");
-  assert.equal(body.messages[0].content[0].type, "text");
-  assert.equal(body.messages[0].content[0].text, "What is this?");
-  assert.match(
-    body.messages[0].content[1].image_url.url,
-    /^data:image\/png;base64,/,
-  );
-  assert.equal(res.output, "A small red circle.");
-  assert.match(res.title, /Qwen3-VL-235B/);
-});
-
-test("codearts_vision honours a custom visionModel", async (t) => {
-  const realFetch = globalThis.fetch;
-  let captured = null;
-  globalThis.fetch = async (input, init) => {
-    captured = { init };
-    return new Response('data: {"choices":[{"delta":{"content":"ok"}}]}', {
-      status: 200,
-    });
-  };
-  t.after(() => {
-    globalThis.fetch = realFetch;
-  });
-
-  const mod = await import("../dist/index.js?vision-model");
-  const hooks = await mod.default.server(
-    {},
-    { ak: "TESTAK", sk: "TESTSK", visionModel: "Qwen3.6-27B-VL" },
-  );
-  await hooks.tool["codearts_vision"].execute(
-    { image_url: "data:image/png;base64,AAAA", prompt: "hi" },
-    { directory: FAKE_HOME, abort: undefined },
-  );
-  assert.equal(captured.init.headers["model-id"], "Qwen3.6-27B-VL");
-  assert.equal(JSON.parse(captured.init.body).model, "Qwen3.6-27B-VL");
-});
-
-test("codearts_vision errors clearly without image / without credentials", async () => {
-  const mod = await import("../dist/index.js?vision-errors");
-  const ctx = { directory: FAKE_HOME, abort: undefined };
-
-  const withCreds = await mod.default.server(
-    {},
-    { ak: "TESTAK", sk: "TESTSK" },
-  );
-  await assert.rejects(
-    () => withCreds.tool["codearts_vision"].execute({ prompt: "hi" }, ctx),
-    /image|image_url/i,
-    "missing image argument rejected",
-  );
-
-  const noCreds = await mod.default.server({}, {});
-  await assert.rejects(
-    () =>
-      noCreds.tool["codearts_vision"].execute(
-        { image_url: "data:image/png;base64,AA" },
-        ctx,
-      ),
-    /connect|AK\/SK/i,
-    "no credentials rejected with connect hint",
-  );
-});
-
-test("codearts_vision reports gateway errors", async (t) => {
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = async () =>
-    new Response('{"error":"InferHub.002002009 not registered"}', {
-      status: 400,
-    });
-  t.after(() => {
-    globalThis.fetch = realFetch;
-  });
-
-  const mod = await import("../dist/index.js?vision-http-error");
-  const hooks = await mod.default.server({}, { ak: "TESTAK", sk: "TESTSK" });
-  await assert.rejects(
-    () =>
-      hooks.tool["codearts_vision"].execute(
-        { image_url: "data:image/png;base64,AA" },
-        { directory: FAKE_HOME, abort: undefined },
-      ),
-    /HTTP 400.*not registered/s,
-  );
+  assert.equal(captured.init.headers["user-session-id"], "ses_fixed_slot");
+  assert.equal(captured.init.headers["x-ot-session-id"], "ses_fixed_slot");
 });
 
 test("V2: toModelInfo maps thinking strengths into reasoning_effort variants", () => {
@@ -1176,7 +1001,7 @@ function makeV2Context(options = {}) {
     providerCalls: [],
     sessionHooks: [],
     integrationCalls: [],
-    tools: [],
+    toolAdds: [],
     reloads: 0,
   };
   const ctx = {
@@ -1209,7 +1034,7 @@ function makeV2Context(options = {}) {
     },
     tool: {
       transform: async (cb) => {
-        cb({ add: (tool) => recorded.tools.push(tool) });
+        cb({ add: (tool) => recorded.toolAdds.push(tool) });
       },
     },
     session: {
@@ -1381,7 +1206,7 @@ test("V2 setup: without credentials the hook leaves requests unsigned", async ()
   );
 });
 
-test("V2 setup: integration key method collects the AK, tool is registered", async () => {
+test("V2 setup: integration key method collects the AK, no LLM tools registered", async () => {
   const mod = await import("../dist/index.js?v2-auth");
   const { ctx, recorded } = makeV2Context({});
   const cleanup = await mod.default.setup(ctx);
@@ -1394,32 +1219,117 @@ test("V2 setup: integration key method collects the AK, tool is registered", asy
   assert.equal(method.method.form[0].key, "ak");
   assert.equal(method.method.form[0].required, true);
 
-  const vision = recorded.tools.find((tool) => tool.name === "codearts_vision");
-  assert.ok(vision, "vision tool registered by default");
-  assert.equal(vision.input.type, "object");
-  assert.ok(vision.input.properties.image);
-  await assert.rejects(
-    () => vision.execute({ prompt: "hi" }),
-    /connect|AK\/SK/i,
-    "execute without credentials yields the connect hint",
+  assert.equal(
+    recorded.toolAdds.length,
+    0,
+    "vision helper removed: multimodal models take image parts natively",
   );
 });
 
-test("V2 setup: visionTool:false skips the vision tool transform", async () => {
-  const mod = await import("../dist/index.js?v2-notool");
-  const { ctx, recorded } = makeV2Context({ visionTool: false });
+test("V2 retry hook: flaky moderation family becomes retryable, others keep host policy", async () => {
+  const mod = await import("../dist/index.js?v2-retry");
+  const { ctx, recorded } = makeV2Context({});
   const cleanup = await mod.default.setup(ctx);
   cleanup();
-  assert.equal(
-    recorded.tools.some((tool) => tool.name === "codearts_vision"),
-    false,
-    "vision tool skipped",
+
+  const hook = recorded.sessionHooks.find((h) => h.name === "retry");
+  assert.ok(hook, "retry hook registered");
+  assert.deepEqual(
+    hook.opts,
+    { providerID: "codearts" },
+    "hook scoped to the provider",
   );
-  assert.equal(
-    recorded.tools.length,
-    0,
-    "no other LLM tools exist — no tool transform at all",
+
+  // Observed flaky rejections: text refusal (403) and image moderation (400).
+  const event = {
+    sessionID: "ses_main",
+    agent: "build",
+    model: { providerID: "codearts", id: "deepseek-v4.1-flash-1017" },
+    error: {
+      type: "provider.auth",
+      message:
+        "CodeArts InferHub error InferHub.ModelArts.81011.403: 抱歉，我无法提供关于您提问内容的建议。",
+      status: 403,
+    },
+    attempt: 2,
+    decision: { retry: false },
+  };
+  await hook.cb(event);
+  assert.deepEqual(
+    event.decision,
+    { retry: true, delay: 2000 },
+    "terminal moderation 403 upgraded to a retryable decision",
   );
+
+  const image = {
+    ...event,
+    error: {
+      type: "provider.invalid-request",
+      message:
+        "CodeArts InferHub error InferHub.ModelArts.81001.400: the content of image_url.url field is unsafe",
+      status: 400,
+    },
+    decision: { retry: false },
+  };
+  await hook.cb(image);
+  assert.deepEqual(
+    image.decision,
+    { retry: true, delay: 2000 },
+    "terminal moderation 400 upgraded too",
+  );
+
+  // A proposed retry (rate limit) keeps its own delay.
+  const proposed = {
+    ...event,
+    error: { ...event.error, status: 429 },
+    decision: { retry: true, delay: 5000 },
+  };
+  await hook.cb(proposed);
+  assert.deepEqual(proposed.decision, { retry: true, delay: 5000 }, "untouched");
+
+  // Real auth failure (APIG signature, no InferHub prefix) stays terminal.
+  const apig = {
+    ...event,
+    error: { type: "provider.auth", message: "APIG.0301 decrypt token fail", status: 403 },
+    decision: { retry: false },
+  };
+  await hook.cb(apig);
+  assert.deepEqual(apig.decision, { retry: false }, "APIG 403 not retried");
+
+  // Deterministic rejections outside the family stay terminal.
+  const notRegistered = {
+    ...event,
+    error: {
+      type: "provider.invalid-request",
+      message: "CodeArts InferHub error InferHub.002002009.404: not registered",
+      status: 404,
+    },
+    decision: { retry: false },
+  };
+  await hook.cb(notRegistered);
+  assert.deepEqual(notRegistered.decision, { retry: false }, "404 not retried");
+
+  const invalidParams = {
+    ...event,
+    error: {
+      type: "provider.invalid-request",
+      message:
+        "CodeArts InferHub error InferHub.001001005.400: The request param is invalid",
+      status: 400,
+    },
+    decision: { retry: false },
+  };
+  await hook.cb(invalidParams);
+  assert.deepEqual(invalidParams.decision, { retry: false }, "invalid params not retried");
+
+  // Foreign-provider events pass through untouched.
+  const foreign = {
+    ...event,
+    model: { providerID: "anthropic", id: "claude" },
+    decision: { retry: false },
+  };
+  await hook.cb(foreign);
+  assert.deepEqual(foreign.decision, { retry: false }, "other providers untouched");
 });
 
 process.on("unhandledRejection", (e) => {

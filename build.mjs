@@ -1,10 +1,9 @@
 import * as esbuild from "esbuild";
 
-// Self-contained server-plugin bundle: V1 needs `tool()` + zod at runtime, so
-// both are inlined — the published package stays zero-dependency. Nothing is
-// external: `@opencode-ai/plugin` is used only for the tiny identity `tool()`
-// helper, and type-only imports are erased. Output overwrites tsc's
-// dist/index.js (tests import the other dist/*.js modules, which stay).
+// Self-contained server-plugin bundle: zero runtime deps — type-only imports
+// (`@opencode-ai/plugin`, zod) are erased, so nothing is inlined or external.
+// Output overwrites tsc's dist/index.js (tests import the other dist/*.js
+// modules, which stay).
 await esbuild.build({
   entryPoints: ["src/index.ts"],
   outfile: "dist/index.js",

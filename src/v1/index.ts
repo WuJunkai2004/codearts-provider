@@ -7,18 +7,10 @@ import {
   type AuthHook,
 } from "@opencode-ai/plugin";
 import type { Model, Provider, Auth } from "@opencode-ai/sdk/v2";
-import { z } from "zod";
 import { createSignedFetch } from "../utils/signer.js";
-import { describeImage, imageToDataUrl } from "../utils/vision.js";
 import { autoCheckin } from "../utils/welfare.js";
 import { detectLangZH, getTranslations } from "../utils/i18n.js";
-import {
-  DEFAULT_VISION_MODEL,
-  HINT_MODEL_ID,
-  PROVIDER_ID,
-  VISION_TOOL_ID,
-  resolvePath,
-} from "../utils/constants.js";
+import { HINT_MODEL_ID, PROVIDER_ID } from "../utils/constants.js";
 import {
   parseAuthEntry,
   resolveBase,
@@ -28,75 +20,23 @@ import {
 import { fetchModels, hintConfigModel, toConfigModel, toModel, type ConfigModel } from "../utils/models.js";
 
 /**
- * V1 plugin function (docs/build/plugins/migrate-v1): returns the four hooks
- * — `config`, `provider`, `auth`, `tool`. Paired with the V2 `setup` in
+ * V1 plugin function (docs/build/plugins/migrate-v1): returns the `config`,
+ * `provider` and `auth` hooks. Paired with the V2 `setup` in
  * `src/v2/index.ts` through the dual default export in `src/index.ts`.
+ *
+ * There is deliberately NO `tool` hook: the gateway's main chat models take
+ * image parts natively (`supports_images`), so the old external
+ * vision-model helper tool (`codearts_vision` → Qwen3-VL-235B) is gone —
+ * that routing alias no longer exists on the gateway, and pasting an image
+ * into a multimodal model flows straight through the chat body.
  */
 export const server: Plugin = async (_input, pluginOptions = {}) => {
   const po = pluginOptions as {
-    visionTool?: boolean;
-    visionModel?: string;
     autoCheckin?: boolean;
   };
-  const visionEnabled = po.visionTool !== false;
   const autoCheckinEnabled = po.autoCheckin !== false;
-  const visionModel = po.visionModel ?? DEFAULT_VISION_MODEL;
   const langZH = detectLangZH();
   const t = getTranslations(langZH);
-
-  // The vision tool is a plugin-level LLM tool, registered whenever the option
-  // is on. Credentials are resolved lazily at call time: the config hook may
-  // not see /connect-stored credentials on first boot, so a registration-time
-  // guard would silently drop the tool. Calling without credentials yields a
-  // clear error instead.
-  const visionTool = tool({
-    description: t.visionToolDescription,
-    args: {
-      image: z
-        .string()
-        .optional()
-        .describe("Local image file path (png/jpg/jpeg/gif/webp/bmp)"),
-      image_url: z
-        .string()
-        .optional()
-        .describe("Remote image URL or data: URL"),
-      prompt: z
-        .string()
-        .optional()
-        .describe("What to ask about the image (default: describe it)"),
-    },
-    execute: async (args, context) => {
-      const creds = resolveCreds({}, pluginOptions);
-      if (!creds) throw new Error(t.visionNoCreds);
-
-      let dataUrl: string;
-      if (args.image) {
-        dataUrl = imageToDataUrl(resolvePath(context.directory, args.image));
-      } else if (args.image_url) {
-        dataUrl = args.image_url;
-      } else {
-        throw new Error(t.visionNoImage);
-      }
-      const out = await describeImage({
-        ak: creds.ak,
-        sk: creds.sk,
-        base: resolveBase({}, pluginOptions),
-        model: visionModel,
-        image: { dataUrl },
-        prompt: args.prompt ?? t.visionDefaultPrompt,
-        signal: context.abort,
-      });
-      if (!out) throw new Error(t.visionEmpty);
-      return {
-        title: `${t.visionTitle} · ${visionModel}`,
-        output: out,
-        metadata: {
-          model: visionModel,
-          image: args.image ?? args.image_url,
-        },
-      };
-    },
-  });
 
   const hooks: Hooks = {
     // Runs before opencode reads cfg.provider. The provider is ALWAYS
@@ -214,7 +154,6 @@ export const server: Plugin = async (_input, pluginOptions = {}) => {
         ],
       } satisfies AuthHook;
     })(),
-    tool: visionEnabled ? { [VISION_TOOL_ID]: visionTool } : undefined,
   };
   return hooks;
 };

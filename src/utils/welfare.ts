@@ -59,8 +59,9 @@ function welfareHeaders(lang: string): Record<string, string> {
   };
 }
 
-/** One cached signed-fetch instance per AK (matches vision.ts; these
- * requests carry no session id, so no slot is consumed either way). */
+/** One cached signed-fetch instance per AK (a fresh id per call would mint
+ * a new session each time; these requests carry no session id, so no slot
+ * is consumed either way). */
 const welfareFetchByAk = new Map<
   string,
   ReturnType<typeof createSignedFetch>

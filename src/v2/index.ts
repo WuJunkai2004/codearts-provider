@@ -8,7 +8,6 @@
  *   V1 `auth` hook     → ctx.integration.transform (key method + AK form);
  *                        credentials read per-request via
  *                        ctx.integration.connection.active/resolve
- *   V1 `tool` map      → ctx.tool.transform        (JSON Schema, structured result)
  *   V1 `options.fetch` → ctx.session.hook("http.request", ..., { providerID })
  *                        (the V2 replacement for injected fetch functions —
  *                        settings must stay JSON-safe)
@@ -22,20 +21,13 @@ import {
   guardChatResponse,
   isInferHubModerationError,
 } from "../utils/sse.js";
-import { describeImage, imageToDataUrl } from "../utils/vision.js";
 import { autoCheckin } from "../utils/welfare.js";
 import { registerQuotaRpc } from "../utils/quota-panel.js";
 import { detectLangZH, getTranslations } from "../utils/i18n.js";
-import {
-  DEFAULT_VISION_MODEL,
-  PROVIDER_ID,
-  VISION_TOOL_ID,
-} from "../utils/constants.js";
-import { resolvePath } from "../utils/paths.js";
+import { PROVIDER_ID } from "../utils/constants.js";
 import {
   readStoredAuth,
   resolveBase,
-  resolveCreds,
   resolveDirectCreds,
 } from "../utils/credentials.js";
 import { fetchModels, hintModelInfo, toModelInfo } from "../utils/models.js";
@@ -82,18 +74,11 @@ async function resolveRequestCreds(
 
 export async function setup(ctx: V2Context): Promise<(() => void) | void> {
   const options = ctx.options as {
-    visionTool?: boolean;
-    visionModel?: string;
     autoCheckin?: boolean;
   };
-  const visionEnabled = options.visionTool !== false;
   const autoCheckinEnabled = options.autoCheckin !== false;
-  const visionModel = options.visionModel ?? DEFAULT_VISION_MODEL;
   const langZH = detectLangZH();
   const t = getTranslations(langZH);
-  // V2 tool context carries no directory (unlike V1); capture the instance
-  // location for resolving relative image paths.
-  const directory = ctx.location?.directory ?? process.cwd();
 
   const base = resolveBase({}, options);
 
@@ -237,61 +222,11 @@ export async function setup(ctx: V2Context): Promise<(() => void) | void> {
     });
   });
 
-  // V1 `tool`: JSON Schema in, structured content out. Credentials are still
-  // resolved lazily at call time (/connect creds are invisible on first boot).
-  if (visionEnabled) {
-    await ctx.tool?.transform((editor) => {
-      editor.add({
-        name: VISION_TOOL_ID,
-        description: t.visionToolDescription,
-        input: {
-          type: "object",
-          properties: {
-            image: {
-              type: "string",
-              description: "Local image file path (png/jpg/jpeg/gif/webp/bmp)",
-            },
-            image_url: {
-              type: "string",
-              description: "Remote image URL or data: URL",
-            },
-            prompt: {
-              type: "string",
-              description: "What to ask about the image (default: describe it)",
-            },
-          },
-          additionalProperties: false,
-        },
-        execute: async (input: {
-          image?: string;
-          image_url?: string;
-          prompt?: string;
-        }) => {
-          const creds = resolveCreds({}, ctx.options);
-          if (!creds) throw new Error(t.visionNoCreds);
-
-          let dataUrl: string;
-          if (input.image) {
-            dataUrl = imageToDataUrl(resolvePath(directory, input.image));
-          } else if (input.image_url) {
-            dataUrl = input.image_url;
-          } else {
-            throw new Error(t.visionNoImage);
-          }
-          const out = await describeImage({
-            ak: creds.ak,
-            sk: creds.sk,
-            base: resolveBase({}, ctx.options),
-            model: visionModel,
-            image: { dataUrl },
-            prompt: input.prompt ?? t.visionDefaultPrompt,
-          });
-          if (!out) throw new Error(t.visionEmpty);
-          return { content: out };
-        },
-      });
-    });
-  }
+  // V1 `tool` map: REMOVED. The old `codearts_vision` tool called a fixed
+  // external vision model to describe images — that routing alias
+  // (Qwen3-VL-235B) is gone from the gateway, and the main chat models now
+  // take image parts natively (`supports_images` → Model.Info input
+  // modality "image"), so there is nothing left for a vision helper to do.
 
   // Background refresh: re-discover models periodically and reload the
   // provider registry when the inventory changes (e.g. credentials were
