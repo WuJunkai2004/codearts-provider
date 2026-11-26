@@ -33,8 +33,12 @@ import { fetchModels, hintConfigModel, toConfigModel, toModel, type ConfigModel 
 export const server: Plugin = async (_input, pluginOptions = {}) => {
   const po = pluginOptions as {
     autoCheckin?: boolean;
+    compressImages?: boolean;
+    describeImages?: boolean;
   };
   const autoCheckinEnabled = po.autoCheckin !== false;
+  const compressImages = po.compressImages === true;
+  const describeImages = po.describeImages === true;
   const langZH = detectLangZH();
   const t = getTranslations(langZH);
 
@@ -75,7 +79,10 @@ export const server: Plugin = async (_input, pluginOptions = {}) => {
         // placeholder apiKey: the OpenAI-compatible SDK insists on one, but the
         // signed Authorization header produced by options.fetch wins on the wire
         target.options.apiKey = target.options.apiKey ?? "codearts-signed";
-        target.options.fetch = createSignedFetch(creds.ak, creds.sk);
+        target.options.fetch = createSignedFetch(creds.ak, creds.sk, {
+          compressImages,
+          describeImages,
+        });
         if (
           models &&
           models.length > 0 &&
@@ -135,7 +142,10 @@ export const server: Plugin = async (_input, pluginOptions = {}) => {
           const creds = parseAuthEntry(auth as StoredAuthEntry);
           if (!creds) return opts;
           opts.apiKey = "codearts-signed";
-          opts.fetch = createSignedFetch(creds.ak, creds.sk);
+          opts.fetch = createSignedFetch(creds.ak, creds.sk, {
+            compressImages,
+            describeImages,
+          });
           return opts;
         },
         methods: [

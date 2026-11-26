@@ -75,8 +75,12 @@ async function resolveRequestCreds(
 export async function setup(ctx: V2Context): Promise<(() => void) | void> {
   const options = ctx.options as {
     autoCheckin?: boolean;
+    compressImages?: boolean;
+    describeImages?: boolean;
   };
   const autoCheckinEnabled = options.autoCheckin !== false;
+  const compressImages = options.compressImages === true;
+  const describeImages = options.describeImages === true;
   const langZH = detectLangZH();
   const t = getTranslations(langZH);
 
@@ -146,6 +150,7 @@ export async function setup(ctx: V2Context): Promise<(() => void) | void> {
         creds.ak,
         creds.sk,
         event.sessionID,
+        { compressImages, describeImages },
       );
     },
     { providerID: PROVIDER_ID },

@@ -6,7 +6,14 @@ import {
   createSignedFetch,
   signNativeRequest,
   applyCliBodyShape,
+  MAX_CHAT_BODY_BYTES,
 } from "../.tsc/utils/signer.js";
+import {
+  applyImageBudget,
+  createCaptionStore,
+  imageId,
+} from "../.tsc/utils/body-budget.js";
+import { createImageCompressor } from "../.tsc/utils/image-compress.js";
 import { discoverModels, pickAgentId } from "../.tsc/utils/discover.js";
 import { readModelCache, writeModelCache } from "../.tsc/utils/cache.js";
 import { toModelInfo } from "../.tsc/utils/models.js";
@@ -257,6 +264,342 @@ test("applyCliBodyShape echoes multimodal text parts as user_prompt", () => {
   assert.equal(body.user_prompt, "这张图是什么？", "text parts joined");
   // image parts pass through untouched for the natively multimodal models
   assert.equal(body.messages[0].content[1].type, "image_url");
+});
+
+function memoryCaptionStore() {
+  const map = new Map();
+  return {
+    get: (id) => map.get(id),
+    set: (id, text) => map.set(id, text),
+    size: () => map.size,
+    flush() {},
+  };
+}
+
+const imagePart = (mb, tag = "") => ({
+  type: "image_url",
+  image_url: {
+    url: `data:image/png;base64,${"A".repeat(mb * 1024 * 1024)}${tag}`,
+  },
+});
+
+test("applyImageBudget captions newest old-turn images first (cache-stable)", async () => {
+  const build = () => ({
+    model: "glm-5.3-flash",
+    messages: [
+      { role: "user", content: [{ type: "text", text: "turn1" }, imagePart(4, "w")] },
+      { role: "assistant", content: "ok" },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "turn2" },
+          imagePart(4, "x"),
+          imagePart(4, "y"),
+        ],
+      },
+      { role: "assistant", content: "ok" },
+      { role: "user", content: [{ type: "text", text: "current" }, imagePart(4, "z")] },
+    ],
+  });
+  const store = memoryCaptionStore();
+  const calls = [];
+  const caption = async (url) => {
+    calls.push(url);
+    return `caption-${calls.length}`;
+  };
+
+  const parsed = build();
+  const first = await applyImageBudget(parsed, { caption, store });
+  // 16 MB total: newest old image first (turn2 y, then turn2 x, then turn1 w).
+  assert.deepEqual(
+    calls.map((url) => url.slice(-1)),
+    ["y", "x", "w"],
+    "newest old image captioned first",
+  );
+  assert.equal(first.captioned, 3);
+  assert.equal(parsed.messages[2].content[2].type, "text");
+  assert.equal(parsed.messages[2].content[1].type, "text");
+  assert.equal(parsed.messages[0].content[1].type, "text");
+  assert.equal(
+    parsed.messages[4].content[1].type,
+    "image_url",
+    "current turn stays native",
+  );
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(parsed), "utf8") <=
+      MAX_CHAT_BODY_BYTES,
+  );
+
+  // A later turn replays the same original history: cached captions apply
+  // without another model call and produce byte-identical output.
+  const parsed2 = build();
+  const second = await applyImageBudget(parsed2, { caption, store });
+  assert.equal(second.captioned, 3);
+  assert.equal(calls.length, 3, "no extra caption calls on a cache hit");
+  assert.deepEqual(parsed2, parsed);
+});
+
+test("applyImageBudget captions every old-turn image, current turn stays native", async () => {
+  const images = Array.from({ length: 12 }, (_, i) => imagePart(2, `-${i}`));
+  const parsed = {
+    model: "glm-5.3-flash",
+    messages: [
+      { role: "user", content: [{ type: "text", text: "old" }, ...images] },
+      { role: "assistant", content: "ok" },
+      {
+        role: "user",
+        content: [{ type: "text", text: "current" }, imagePart(1, "-cur")],
+      },
+    ],
+  };
+  const calls = [];
+  const result = await applyImageBudget(parsed, {
+    caption: async (url) => {
+      calls.push(url);
+      return `caption-${calls.length}`;
+    },
+    store: memoryCaptionStore(),
+  });
+  assert.equal(calls.length, 12, "no per-request cap");
+  assert.equal(result.captioned, 12);
+  assert.ok(
+    parsed.messages[0].content.slice(1).every((p) => p.type === "text"),
+    "all old images replaced",
+  );
+  assert.equal(
+    parsed.messages[2].content[1].type,
+    "image_url",
+    "current-turn image untouched",
+  );
+});
+
+test("applyImageBudget keeps images native when captions fail (no placeholder)", async () => {
+  const parsed = {
+    model: "glm-5.3-flash",
+    messages: [
+      { role: "user", content: [{ type: "text", text: "old" }, imagePart(6, "a"), imagePart(6, "b")] },
+      { role: "assistant", content: "ok" },
+      { role: "user", content: [{ type: "text", text: "current" }, imagePart(6, "c")] },
+    ],
+  };
+  const calls = [];
+  const result = await applyImageBudget(parsed, {
+    caption: async () => {
+      calls.push(1);
+      return null;
+    },
+    store: memoryCaptionStore(),
+  });
+  assert.equal(result.captioned, 0);
+  assert.equal(calls.length, 2, "stops after two consecutive failures");
+  const parts = parsed.messages.flatMap((m) =>
+    Array.isArray(m.content) ? m.content : [],
+  );
+  assert.ok(parts.some((p) => p.type === "image_url"), "images kept");
+  assert.ok(
+    !parts.some((p) => p.type === "text" && /image omitted/.test(p.text)),
+    "no information-losing placeholder",
+  );
+});
+
+test("applyImageBudget compresses every image (including current turn) and skips captions", async () => {
+  const images = Array.from({ length: 12 }, (_, i) => imagePart(2, `-${i}`));
+  const current = imagePart(1, "-cur");
+  const parsed = {
+    model: "glm-5.3-flash",
+    messages: [
+      { role: "user", content: [{ type: "text", text: "old" }, ...images] },
+      { role: "assistant", content: "ok" },
+      { role: "user", content: [{ type: "text", text: "current" }, current] },
+    ],
+  };
+  const compressCalls = [];
+  const captionCalls = [];
+  const result = await applyImageBudget(parsed, {
+    compress: {
+      compress: async (url) => {
+        compressCalls.push(url);
+        return "data:image/jpeg;base64,COMPRESSED";
+      },
+    },
+    caption: async (url) => {
+      captionCalls.push(url);
+      return "should not be called";
+    },
+    store: memoryCaptionStore(),
+  });
+  assert.equal(compressCalls.length, 13, "old + current turn images");
+  assert.equal(result.compressed, 13);
+  assert.equal(result.captioned, 0);
+  assert.equal(captionCalls.length, 0, "no caption model calls after compression");
+  assert.ok(
+    parsed.messages[0].content.slice(1).every(
+      (p) => p.type === "image_url" && p.image_url.url === "data:image/jpeg;base64,COMPRESSED",
+    ),
+    "all old images compressed",
+  );
+  assert.equal(
+    parsed.messages[2].content[1].image_url.url,
+    "data:image/jpeg;base64,COMPRESSED",
+    "current-turn image also compressed (stable prefix)",
+  );
+});
+
+test("applyImageBudget leaves an over-limit compressed body to the gateway", async () => {
+  const bigCompressed = `data:image/jpeg;base64,${"B".repeat(3.9 * 1024 * 1024)}`;
+  const parsed = {
+    model: "glm-5.3-flash",
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "old" },
+          imagePart(4, "-a"),
+          imagePart(4, "-b"),
+          imagePart(4, "-c"),
+        ],
+      },
+      { role: "assistant", content: "ok" },
+      { role: "user", content: [{ type: "text", text: "current" }, imagePart(4, "-cur")] },
+    ],
+  };
+  const captionCalls = [];
+  const result = await applyImageBudget(parsed, {
+    compress: { compress: async () => bigCompressed },
+    caption: async () => {
+      captionCalls.push(1);
+      return "must not be called";
+    },
+    store: memoryCaptionStore(),
+  });
+  assert.equal(result.compressed, 4);
+  assert.equal(result.captioned, 0);
+  assert.equal(
+    captionCalls.length,
+    0,
+    "compression mode never invokes the caption model (no slowdown)",
+  );
+  assert.ok(
+    !parsed.messages[0].content.some((p) => p.type === "text" && /caption/.test(p.text)),
+  );
+});
+
+test("applyImageBudget replays cached compression without re-encoding", async () => {
+  const build = () => ({
+    model: "glm-5.3-flash",
+    messages: [
+      { role: "user", content: [{ type: "text", text: "old" }, imagePart(1, "cached")] },
+      { role: "assistant", content: "ok" },
+      {
+        role: "user",
+        content: [{ type: "text", text: "current" }, imagePart(1, "cached-cur")],
+      },
+    ],
+  });
+  const cache = new Map();
+  let encodes = 0;
+  const compressor = {
+    compress: async (url) => {
+      if (!cache.has(url)) {
+        encodes++;
+        cache.set(url, "data:image/webp;base64,CACHED");
+      }
+      return cache.get(url);
+    },
+  };
+
+  // Compression is applied even under the 10 MB watermark (deterministic, so
+  // the representation never flips between requests).
+  const parsed = build();
+  const first = await applyImageBudget(parsed, {
+    compress: compressor,
+    store: memoryCaptionStore(),
+  });
+  assert.equal(first.compressed, 2);
+  assert.equal(encodes, 2);
+
+  const parsed2 = build();
+  const second = await applyImageBudget(parsed2, {
+    compress: compressor,
+    store: memoryCaptionStore(),
+  });
+  assert.equal(second.compressed, 2);
+  assert.equal(encodes, 2, "cached WebP replayed without re-encoding");
+  assert.deepEqual(parsed2, parsed);
+});
+
+test(
+  "image compressor is unavailable without Bun.Image",
+  { skip: typeof globalThis.Bun !== "undefined" },
+  () => {
+    assert.equal(createImageCompressor(), null);
+  },
+);
+
+test("caption store persists captions by image hash", () => {
+  const dir = mkdtempSync(join(tmpdir(), "codearts-captions-"));
+  const path = join(dir, "captions.json");
+  const first = createCaptionStore(path);
+  first.set("hash-1", "a dense screenshot description");
+  first.flush();
+
+  const second = createCaptionStore(path);
+  assert.equal(second.get("hash-1"), "a dense screenshot description");
+  assert.equal(second.get("hash-missing"), undefined);
+});
+
+test("applyImageBudget replays cached captions even under budget", async () => {
+  // Once an image has been sent as text, sending it natively again would
+  // change the cached prefix — so the caption must be replayed even when the
+  // body is already small.
+  const image = imagePart(1, "cached");
+  const parsed = {
+    model: "glm-5.3-flash",
+    messages: [
+      { role: "user", content: [{ type: "text", text: "old" }, image] },
+      { role: "assistant", content: "ok" },
+      { role: "user", content: [{ type: "text", text: "current" }] },
+    ],
+  };
+  const store = memoryCaptionStore();
+  store.set(imageId(image.image_url.url), "cached screenshot description");
+
+  const result = await applyImageBudget(parsed, {
+    store,
+    caption: async () => {
+      throw new Error("must not call the caption model");
+    },
+  });
+  assert.equal(result.captioned, 1);
+  assert.equal(parsed.messages[0].content[1].type, "text");
+  assert.equal(
+    parsed.messages[0].content[1].text,
+    "cached screenshot description",
+  );
+});
+
+test("applyImageBudget does nothing by default (no describe/compress option)", async () => {
+  const image = imagePart(1, "default");
+  const parsed = {
+    model: "glm-5.3-flash",
+    messages: [
+      { role: "user", content: [{ type: "text", text: "old" }, image] },
+      { role: "assistant", content: "ok" },
+      {
+        role: "user",
+        content: [{ type: "text", text: "current" }, imagePart(1, "cur")],
+      },
+    ],
+  };
+  // Even a cached caption from an earlier describeImages run must not be
+  // replayed: both options off means the request is left byte-identical.
+  const store = memoryCaptionStore();
+  store.set(imageId(image.image_url.url), "cached caption");
+  const before = JSON.stringify(parsed);
+
+  const result = await applyImageBudget(parsed, { store });
+  assert.deepEqual(result, { captioned: 0, compressed: 0 });
+  assert.equal(JSON.stringify(parsed), before);
 });
 
 test("createSignedFetch leaves non-chat requests untouched", async (t) => {
