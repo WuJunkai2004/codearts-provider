@@ -7,6 +7,8 @@
 - 复刻 CodeArts CLI（agentkernel）的请求签名（华为云 APIG `SDK-HMAC-SHA256`）与请求形态，直连 InferHub 网关
 - 模型清单来自账号的 agent-center 动态下发，并合并 opengw 网关的 IDE 专属模型（deepseek-v4 / glm-5.3 等），带文件缓存兜底
 - 多模态模型（`supports_images`）的图片直传聊天请求，不再借助外部视觉模型转文字
+- 图片默认**原样发送、不做任何处理**。可选 `describeImages`（默认关闭）：超过 10MB 软水位时，把**旧轮**图片按 `sha256(图片)` 缓存转成文字描述，直到旧轮图片全部替换完（当前轮图片保持原生）；不丢图片、不用占位符、不做本地硬上限报错
+- 可选 `compressImages`（默认关闭）：每次请求把**所有**内联图片（包括当前轮）重编码为 WebP（原分辨率，q80，基本可视为无损），按图片 hash 缓存、只编码一次。开启后**只走压缩、不调用识图模型**，并优先于 `describeImages`；压缩后仍超限则照常发给网关。因为每张图从第一次出现就是同一个 WebP，缓存前缀稳定。运行时没有 `Bun.Image` 时该选项不生效（若 `describeImages` 开启则回落到识图）
 - 服务端下发的思考挡位（`supported_thinking_strengths`）映射为 opencode 模型挡位（variants），选中即注入顶层 `reasoning_effort`
 - 内置每日自动签到（`USER_LOGIN` 每日签到领 1000 积分，benefit 模型的消耗额度），静默运行无需干预
 
@@ -101,7 +103,7 @@ opencode run -m codearts/GLM-5.2 "hello"
 
 ```jsonc
 // 完全关闭自动签到
-"plugin": [["file:///D:/code/huaweicode/codearts-provider", { "autoCheckin": false }]]
+"plugin": [["file:///path/to/codearts-provider", { "autoCheckin": false }]]
 ```
 
 ## 模型清单（2026-11 实测）
@@ -130,14 +132,27 @@ opengw 来源的模型（deepseek-v4 系列 / glm-5.3）推理时自动附加 `m
 在 plugin 数组中用元组形式传入（可选）：
 
 ```jsonc
-"plugin": [["file:///D:/code/huaweicode/codearts-provider", { "baseURL": "https://snap-access.cn-north-4.myhuaweicloud.com", "ak": "...", "sk": "..." }]]
+"plugin": [["file:///path/to/codearts-provider", { "baseURL": "https://snap-access.cn-north-4.myhuaweicloud.com", "ak": "...", "sk": "..." }]]
 ```
 
-| 选项          | 默认值                                             | 说明                                       |
-| ------------- | -------------------------------------------------- | ------------------------------------------ |
-| `baseURL`     | `https://snap-access.cn-north-4.myhuaweicloud.com` | 服务 base URL                              |
-| `ak` / `sk`   | 环境变量 `CODEARTS_CLI_AK/SK`                      | 凭证（完整优先级链见[凭证](#凭证)）        |
-| `autoCheckin` | `true`                                             | 是否启用每日自动签到（后台静默，每天一次） |
+| 选项             | 默认值                                             | 说明                                       |
+| ---------------- | -------------------------------------------------- | ------------------------------------------ |
+| `baseURL`        | `https://snap-access.cn-north-4.myhuaweicloud.com` | 服务 base URL                              |
+| `ak` / `sk`      | 环境变量 `CODEARTS_CLI_AK/SK`                      | 凭证（完整优先级链见[凭证](#凭证)）        |
+| `autoCheckin`    | `true`                                             | 是否启用每日自动签到（后台静默，每天一次） |
+| `describeImages` | `false`                                            | 超过 10MB 水位时把**旧轮**图片转成文字描述（按图片 hash 缓存）。默认关闭 = 图片原样发送 |
+| `compressImages` | `false`                                            | 每次请求把**所有**内联图片（包括当前轮）重编码为 WebP（原分辨率，q80，基本可视为无损），按图片 hash 缓存、只编码一次。开启后**只走压缩、不调用识图模型**，并优先于 `describeImages`；压缩后仍超限则照常发给网关报错。每张图从第一次出现就是同一个 WebP，缓存前缀稳定。依赖 opencode 内置的 `Bun.Image`，不可用时该选项不生效 |
+
+```jsonc
+// 旧轮图片转文字（默认关闭）
+"plugin": [["file:///path/to/codearts-provider", { "describeImages": true }]]
+
+// 图片压缩（默认关闭；优先于 describeImages）
+"plugin": [["file:///path/to/codearts-provider", { "compressImages": true }]]
+
+// V2 写法
+"plugins": [{ "package": "file:///path/to/codearts-provider/dist", "options": { "compressImages": true } }]
+```
 
 界面语言按 `CODEARTS_LANG` > `LC_ALL` > `LANG` 检测中文/英文（提示文案双语）。
 
